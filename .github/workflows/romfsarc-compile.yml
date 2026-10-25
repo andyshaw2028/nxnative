@@ -1,0 +1,48 @@
+name: ROMFSARC compile check
+
+on:
+  push:
+    branches:
+      - test-romfsarc-compile
+    paths:
+      - "dm/host/romfs_arc.c"
+      - "dm/host/romfs_arc.h"
+      - ".github/workflows/romfsarc-compile.yml"
+  pull_request:
+    branches:
+      - test-romfsarc-compile
+    paths:
+      - "dm/host/romfs_arc.c"
+      - "dm/host/romfs_arc.h"
+      - ".github/workflows/romfsarc-compile.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compile:
+    runs-on: macos-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Compile ROMFSARC source
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/romfsarc-build"
+          cc -std=c11 -D_DARWIN_C_SOURCE -Wall -Wextra \
+            -I dm/host \
+            -c dm/host/romfs_arc.c \
+            -o "$RUNNER_TEMP/romfsarc-build/romfs_arc.o"
+
+      - name: Verify header can be included
+        run: |
+          set -eu
+          printf '#include "romfs_arc.h"\nint main(void) { return 0; }\n' \
+            > "$RUNNER_TEMP/romfsarc-build/header_check.c"
+          cc -std=c11 -D_DARWIN_C_SOURCE -Wall -Wextra \
+            -I dm/host \
+            "$RUNNER_TEMP/romfsarc-build/header_check.c" \
+            -o "$RUNNER_TEMP/romfsarc-build/header_check"
+          "$RUNNER_TEMP/romfsarc-build/header_check"
