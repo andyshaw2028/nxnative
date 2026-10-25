@@ -1,0 +1,20 @@
+
+name: ROMFSARC syntax check
+
+on:
+  push:
+    paths:
+      - 'dm/host/romfs_arc.c'
+      - 'dm/host/romfs_arc.h'
+      - '.github/workflows/romfs-arc-check.yml'
+  workflow_dispatch:
+
+jobs:
+  syntax-check:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout test branch
+        uses: actions/checkout@v4
+
+      - name: Check ROMFSARC C syntax
+        run: clang -std=gnu11 -Wall -Wno-unused-function -fsyntax-only dm/host/romfs_arc.c
