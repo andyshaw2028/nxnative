@@ -1,0 +1,40 @@
+name: Build IPA from NSP
+
+on:
+  workflow_dispatch:
+    inputs:
+      nsp_file:
+        description: 'Upload your NSP file'
+        type: file
+        required: true
+      title_id:
+        description: 'Game Title ID'
+        default: '01007EF00011E000'
+        required: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download uploaded NSP
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ github.event.inputs.nsp_file }}
+          path: ./game
+      - name: Setup dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y python3 python3-pip cmake clang git
+          pip3 install pycryptodome
+      - name: Run nxnative build
+        env:
+          PROD_KEYS: ${{ secrets.PROD_KEYS }}
+        run: |
+          echo "$PROD_KEYS" > prod.keys
+          python3 scripts/build_ipa_from_nsp.py -k prod.keys ./game/*.nsp
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-ipa
+          path: scripts/output/*.ipa
