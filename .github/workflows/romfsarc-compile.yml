@@ -55,8 +55,8 @@ jobs:
           root = sys.argv[1]
           os.makedirs(root, exist_ok=True)
           files = [
-              ("Pack/sample.txt", b"ROMFSARC test content\\n"),
-              ("Pack/Nested/nested.txt", b"nested-file-check\\n"),
+              ("Pack/sample.txt", b"ROMFSARC test content\n"),
+              ("Pack/Nested/nested.txt", b"nested-file-check\n"),
               ("System/binary.bin", bytes([0, 1, 2, 0x7f, 0x80, 0xfe, 0xff])),
               ("System/empty.dat", b""),
           ]
@@ -68,7 +68,7 @@ jobs:
           for name in [d for d in dirs] + [p for p, _ in files]:
               if name not in offsets:
                   offsets[name] = len(pool)
-                  pool.extend(name.encode("utf-8") + b"\\0")
+                  pool.extend(name.encode("utf-8") + b"\0")
           shards = [bytearray(), bytearray()]
           file_records = []
           for i, (name, data) in enumerate(files):
