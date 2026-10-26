@@ -15,23 +15,23 @@ jobs:
 
       - name: Install macOS Build Dependencies
         run: |
+          # 1. 安装核心编译工具（去掉引起报错的 pipx）
           brew install xcodegen zstd spirv-cross glslang
-          brew install --cask dotnet-sdk
-          python3 -m pip install lz4 capstone fonttools zstd
+
+          # 2. 使用安全合规的 --user 模式安装 Python 解包依赖，避开 PEP 668 报错
+          python3 -m pip install --user --upgrade pip
+          python3 -m pip install --user lz4 capstone fonttools zstd
 
       - name: Generate Xcode Project using xcodegen
         run: |
-          # 检查是否存在 project.yml 并用 xcodegen 动态构建工程
           if [ -f "project.yml" ]; then
             xcodegen generate
           else
-            echo "project.yml not found, searching project definition..."
             find . -name "project.yml" -execdir xcodegen generate \;
           fi
 
       - name: Build iOS App with xcodebuild
         run: |
-          # 自动寻找生成的 xcodeproj 并编译 arm64 无签名二进制包
           XCODEPROJ=$(find . -maxdepth 2 -name "*.xcodeproj" | head -n 1)
           if [ -z "$XCODEPROJ" ]; then
             echo "Error: No .xcodeproj generated!"
@@ -49,10 +49,8 @@ jobs:
 
       - name: Package Standalone Shell IPA
         run: |
-          # 1. 创建标准的 App 沙盒包结构
           mkdir -p Payload/nxnative.app
 
-          # 2. 找到编译产物并复制放入 Payload
           APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData -name "*.app" -type d 2>/dev/null | head -n 1)
           if [ -z "$APP_PATH" ]; then
             APP_PATH=$(find build -name "*.app" -type d 2>/dev/null | head -n 1)
@@ -65,10 +63,10 @@ jobs:
             exit 1
           fi
 
-          # 3. 注入开启“文件共享”与“大内存特权”的 Info.plist
+          # 注入 Info.plist（包含文件共享与大内存特权）
           cat << 'EOF' > Payload/nxnative.app/Info.plist
           <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.plist">
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
           <dict>
               <key>CFBundleExecutable</key>
@@ -87,12 +85,12 @@ jobs:
               <string>1</string>
               <key>LSRequiresIPhoneOS</key>
               <true/>
-              <!-- 开启文件共享（关键：使爱思助手能够浏览并注入 Documents 文件夹） -->
+              <!-- 开启文件共享 -->
               <key>UIFileSharingEnabled</key>
               <true/>
               <key>LSSupportsOpeningDocumentsInPlace</key>
               <true/>
-              <!-- 解锁内存上限至 ~6GB，防止旷野之息加载大场景时直接溢出崩溃 -->
+              <!-- 解锁大内存特权，防止旷野之息加载崩后台 -->
               <key>com.apple.developer.kernel.increased-memory-limit</key>
               <true/>
               <key>UIRequiredDeviceCapabilities</key>
@@ -108,7 +106,6 @@ jobs:
           </plist>
           EOF
 
-          # 4. 打包输出 Shell IPA
           zip -r BOTW-iOS-Shell.ipa Payload
 
       - name: Upload Shell Artifact
