@@ -1,0 +1,93 @@
+name: Build BOTW iOS Shell IPA
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-ios-shell:
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - name: Install Dependencies
+        run: |
+          brew install cmake ninja sdl3 spirv-cross glslang
+
+      - name: Build Executable Binary
+        run: |
+          cargo build --release --target aarch64-apple-ios
+
+      - name: Package Standalone Shell IPA
+        run: |
+          # 1. 创建标准的 App 沙盒包目录结构
+          mkdir -p Payload/BOTW.app
+
+          # 2. 找到编译好的 aarch64 二进制文件并复制到包内
+          EXECUTABLE=$(find target/aarch64-apple-ios/release -maxdepth 1 -type f -perm -u+x | head -n 1)
+          if [ -z "$EXECUTABLE" ]; then
+            echo "Error: No executable binary found!"
+            exit 1
+          fi
+          cp "$EXECUTABLE" Payload/BOTW.app/BOTW
+          chmod +x Payload/BOTW.app/BOTW
+
+          # 3. 生成包含文件共享权限与大内存特权的 Info.plist
+          cat << 'EOF' > Payload/BOTW.app/Info.plist
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleExecutable</key>
+              <string>BOTW</string>
+              <key>CFBundleIdentifier</key>
+              <string>com.recomp.botw</string>
+              <key>CFBundleName</key>
+              <string>BOTW</string>
+              <key>CFBundleDisplayName</key>
+              <string>Zelda BOTW</string>
+              <key>CFBundlePackageType</key>
+              <string>APPL</string>
+              <key>CFBundleShortVersionString</key>
+              <string>1.0</string>
+              <key>CFBundleVersion</key>
+              <string>1</string>
+              <key>LSRequiresIPhoneOS</key>
+              <true/>
+              <!-- 开启 iOS 应用文件共享（必须） -->
+              <key>UIFileSharingEnabled</key>
+              <true/>
+              <key>LSSupportsOpeningDocumentsInPlace</key>
+              <true/>
+              <!-- 允许申请更大内存（解决大游戏内存溢出闪退） -->
+              <key>com.apple.developer.kernel.increased-memory-limit</key>
+              <true/>
+              <key>UIRequiredDeviceCapabilities</key>
+              <array>
+                  <string>arm64</string>
+              </array>
+              <key>UISupportedInterfaceOrientations</key>
+              <array>
+                  <string>UIInterfaceOrientationLandscapeLeft</string>
+                  <string>UIInterfaceOrientationLandscapeRight</string>
+              </array>
+          </dict>
+          </plist>
+          EOF
+
+          # 4. 打包为无游戏数据的空壳 IPA
+          zip -r BOTW-iOS-Shell.ipa Payload
+
+      - name: Upload Shell Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BOTW-iOS-Shell-IPA
+          path: BOTW-iOS-Shell.ipa
