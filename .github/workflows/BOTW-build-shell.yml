@@ -15,12 +15,13 @@ jobs:
 
       - name: Install macOS Build Dependencies
         run: |
-          # 1. 安装核心编译工具（去掉引起报错的 pipx）
+          # 1. 安装核心编译工具
           brew install xcodegen zstd spirv-cross glslang
 
-          # 2. 使用安全合规的 --user 模式安装 Python 解包依赖，避开 PEP 668 报错
-          python3 -m pip install --user --upgrade pip
-          python3 -m pip install --user lz4 capstone fonttools zstd
+          # 2. 创建并激活 Python 虚拟环境，彻底绕过 PEP 668 限制
+          python3 -m venv venv
+          ./venv/bin/pip install --upgrade pip
+          ./venv/bin/pip install lz4 capstone fonttools zstd
 
       - name: Generate Xcode Project using xcodegen
         run: |
