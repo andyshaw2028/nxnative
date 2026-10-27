@@ -28,18 +28,14 @@ jobs:
         unzip botw_core.zip -d input_core/
         ls -la input_core/
 
-    - name: Inspect Workspace and Scripts
+    - name: Run Build Script with Correct Arguments
       run: |
-        echo "=== Root Files ==="
-        ls -la
-        echo "=== Scripts Directory ==="
-        ls -la scripts/ || true
+        # 查找 keys 文件的实际路径
+        KEYS_FILE=$(find input_core -name "prod.keys" | head -n 1)
+        echo "Found keys file at: $KEYS_FILE"
 
-    - name: Run Build Script
-      run: |
-        # 注意：如果你的构建脚本名字不是 build_ipa_from_nsp.py，
-        # 请根据上面打印出的 scripts/ 目录内容调整文件名和参数
-        python3 scripts/build_ipa_from_nsp.py --exefs input_core/exefs --keys input_core/prod.keys || python3 scripts/build.py --help
+        # 运行打包脚本：使用 -k 指定密钥，并将包含 exefs 的目录作为参数传入
+        python3 scripts/build_ipa_from_nsp.py -k "$KEYS_FILE" input_core/
       shell: bash
 
     - name: Upload Built IPA Artifact
