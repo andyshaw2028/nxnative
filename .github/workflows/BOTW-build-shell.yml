@@ -20,28 +20,36 @@ jobs:
       run: |
         brew install xcodegen zstd spirv-cross glslang
         python3 -m pip install --upgrade pip
-        # 安装项目运行所需的 Python 库（特别是报错缺失的 lz4）
         python3 -m pip install lz4
-        # 如果仓库里有 requirements.txt，顺便把它装上
         if [ -f requirements.txt ]; then python3 -m pip install -r requirements.txt; fi
         if [ -f scripts/requirements.txt ]; then python3 -m pip install -r scripts/requirements.txt; fi
 
-    - name: Download BotW Core (exefs & keys)
+    - name: Download and Prepare BotW Core Structure
       run: |
         echo "Downloading lightweight core package (27MB)..."
         curl -L -o botw_core.zip "https://github.com/user-attachments/files/34022482/botw_core.zip"
-        echo "Extracting core package..."
-        unzip botw_core.zip -d input_core/
-        ls -la input_core/
+        
+        echo "Preparing mock NSP directory structure for BotW..."
+        mkdir -p mock_nsp/01007EF00011E000
+        
+        # 解压到临时目录
+        unzip -q botw_core.zip -d temp_extracted/
+        
+        # 将 exefs 和 keys 移动到符合 Title ID 的标准结构中
+        find temp_extracted -type d -name "exefs" -exec cp -r {} mock_nsp/01007EF00011E000/ \;
+        find temp_extracted -type f -name "prod.keys" -exec cp {} mock_nsp/ \;
+        
+        echo "=== Checking mock_nsp structure ==="
+        ls -la mock_nsp/
+        ls -la mock_nsp/01007EF00011E000/ || true
 
-    - name: Run Build Script with Correct Arguments
+    - name: Run Build Script with Mock Structure
       run: |
-        # 查找 keys 文件的实际路径
-        KEYS_FILE=$(find input_core -name "prod.keys" | head -n 1)
-        echo "Found keys file at: $KEYS_FILE"
+        KEYS_FILE="mock_nsp/prod.keys"
+        echo "Using keys file at: $KEYS_FILE"
 
-        # 运行打包脚本：使用 -k 指定密钥，并将包含 exefs 的目录作为参数传入
-        python3 scripts/build_ipa_from_nsp.py -k "$KEYS_FILE" input_core/
+        # 将伪造好的 Title ID 目录传给打包脚本
+        python3 scripts/build_ipa_from_nsp.py -k "$KEYS_FILE" mock_nsp/01007EF00011E000/
       shell: bash
 
     - name: Upload Built IPA Artifact
