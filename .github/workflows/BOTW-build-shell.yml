@@ -16,11 +16,15 @@ jobs:
       with:
         python-version: '3.10'
 
+    - name: Set up .NET Core (Required for nx_extract)
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '8.0.x' # 安装通用的 .NET 运行时支持
+
     - name: Install macOS build & Python dependencies
       run: |
         brew install xcodegen zstd spirv-cross glslang
         python3 -m pip install --upgrade pip
-        # 安装脚本运行所需的全部 Python 依赖（补齐 capstone, fonttools, backports.zstd）
         python3 -m pip install lz4 capstone fonttools backports.zstd
         if [ -f requirements.txt ]; then python3 -m pip install -r requirements.txt; fi
         if [ -f scripts/requirements.txt ]; then python3 -m pip install -r scripts/requirements.txt; fi
