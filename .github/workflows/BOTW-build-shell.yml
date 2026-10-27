@@ -20,7 +20,8 @@ jobs:
       run: |
         brew install xcodegen zstd spirv-cross glslang
         python3 -m pip install --upgrade pip
-        python3 -m pip install lz4
+        # 安装脚本运行所需的全部 Python 依赖（补齐 capstone, fonttools, backports.zstd）
+        python3 -m pip install lz4 capstone fonttools backports.zstd
         if [ -f requirements.txt ]; then python3 -m pip install -r requirements.txt; fi
         if [ -f scripts/requirements.txt ]; then python3 -m pip install -r scripts/requirements.txt; fi
 
@@ -39,15 +40,12 @@ jobs:
 
     - name: Patch Build Script with Path Object Fallback
       run: |
-        # 修复属性错误：将 base 包装为 Path 对象，支持 .suffix 属性调用
         python3 - << 'EOF'
         script_path = "scripts/build_ipa_from_nsp.py"
         with open(script_path, "r", encoding="utf-8") as f:
             content = f.read()
 
         target_code = "if not fams: raise BuildError(f'no NSP with a readable title ID in {nsp_dir}')"
-        
-        # 使用 Path('workspace_core/botw_core') 确保其具备 Path 属性
         replacement_code = "fams = fams or {0x01007EF00011E000: {'base': Path('workspace_core/botw_core'), 'updates': [], 'dlc': []}}"
         
         if target_code in content:
@@ -73,3 +71,4 @@ jobs:
           *.ipa
           **/output/*.ipa
           **/build/*.ipa
+          workspace_core/*.ipa
