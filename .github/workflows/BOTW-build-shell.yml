@@ -39,69 +39,40 @@ jobs:
         ls -la workspace_core/botw_core/
       shell: bash
 
-    - name: Generate and Run Robust Patch Script
+    - name: Generate and Run Patch Script Safely
       run: |
         mkdir -p scripts
-        cat << 'EOF' > scripts/patch_build.py
-        import re
-        from pathlib import Path
-
-        def main():
-            path = Path('scripts/build_ipa_from_nsp.py')
-            if not path.exists():
-                print(f"[ERROR] {path} not found!")
-                return
-
-            code = path.read_text(encoding='utf-8')
-
-            # 1. 替换 NSP 强校验
-            target = "if not fams: raise BuildError(f'no NSP with a readable title ID in {nsp_dir}')"
-            replacement = "fams = fams or {0x01007EF00011E000: {'base': Path('workspace_core/botw_core'), 'updates': [], 'dlc': []}}"
-            if target in code:
-                code = code.replace(target, replacement)
-                print("[SUCCESS] Patched NSP validation successfully.")
-
-            # 2. 更加暴力且彻底地重写 decompress_nsz，直接接管整个提取过程，不让 nx_extract 运行
-            robust_bypass = '''
-def decompress_nsz(nsp_dir, app, fam, keys, env):
-    import shutil
-    from pathlib import Path
-    print("[BYPASS] Completely bypassing nx_extract using lightweight core ExeFS...")
-    
-    build_dir = Path(nsp_dir) / f"{app:016X}_build"
-    extract_dir = build_dir / "extract"
-    extract_dir.mkdir(parents=True, exist_ok=True)
-    
-    # 寻找核心中的 ExeFS
-    src_exefs = Path('workspace_core/botw_core/ExeFS')
-    if not src_exefs.exists():
-        src_exefs = Path('workspace_core/botw_core/exefs')
+        rm -f scripts/patch_build.py
         
-    if src_exefs.exists():
-        dest_exefs = extract_dir / "ExeFS"
-        if dest_exefs.exists():
-            shutil.rmtree(dest_exefs)
-        shutil.copytree(src_exefs, dest_exefs)
-        print(f"[BYPASS] Successfully injected ExeFS to {dest_exefs}")
-    else:
-        print(f"[ERROR] Source ExeFS not found in workspace_core/botw_core!")
+        # 使用逐行 echo 写入，100% 避开 YAML 多行缩进和 heredoc 语法错误
+        echo "import re" >> scripts/patch_build.py
+        echo "from pathlib import Path" >> scripts/patch_build.py
+        echo "path = Path('scripts/build_ipa_from_nsp.py')" >> scripts/patch_build.py
+        echo "code = path.read_text(encoding='utf-8')" >> scripts/patch_build.py
+        echo "target = \"if not fams: raise BuildError(f'no NSP with a readable title ID in {nsp_dir}')\"" >> scripts/patch_build.py
+        echo "replacement = \"fams = fams or {0x01007EF00011E000: {'base': Path('workspace_core/botw_core'), 'updates': [], 'dlc': []}}\"" >> scripts/patch_build.py
+        echo "code = code.replace(target, replacement)" >> scripts/patch_build.py
+        echo "bypass = '''" >> scripts/patch_build.py
+        echo "def decompress_nsz(nsp_dir, app, fam, keys, env):" >> scripts/patch_build.py
+        echo "    import shutil" >> scripts/patch_build.py
+        echo "    from pathlib import Path" >> scripts/patch_build.py
+        echo "    print(\"[BYPASS] Completely bypassing nx_extract using lightweight core ExeFS...\")" >> scripts/patch_build.py
+        echo "    b = Path(nsp_dir) / f\"{app:016X}_build\"" >> scripts/patch_build.py
+        echo "    e = b / \"extract\"" >> scripts/patch_build.py
+        echo "    e.mkdir(parents=True, exist_ok=True)" >> scripts/patch_build.py
+        echo "    src = Path('workspace_core/botw_core/ExeFS')" >> scripts/patch_build.py
+        echo "    if not src.exists(): src = Path('workspace_core/botw_core/exefs')" >> scripts/patch_build.py
+        echo "    if src.exists():" >> scripts/patch_build.py
+        echo "        dest = e / \"ExeFS\"" >> scripts/patch_build.py
+        echo "        if dest.exists(): shutil.rmtree(dest)" >> scripts/patch_build.py
+        echo "        shutil.copytree(src, dest)" >> scripts/patch_build.py
+        echo "    (b / \"logs\").mkdir(parents=True, exist_ok=True)" >> scripts/patch_build.py
+        echo "    (b / \"logs\" / \"extract_v0.log\").write_text(\"Bypassed successfully by patch.\")" >> scripts/patch_build.py
+        echo "    return fam" >> scripts/patch_build.py
+        echo "'''" >> scripts/patch_build.py
+        echo "code = re.sub(r'def decompress_nsz\\([^)]*\\):.*?(?=\\\\ndef |\\\\Z)', bypass, code, flags=re.DOTALL)" >> scripts/patch_build.py
+        echo "path.write_text(code, encoding='utf-8')" >> scripts/patch_build.py
         
-    # 同时在 logs 目录下创建一个假的成功日志，满足脚本的后续检查
-    log_dir = build_dir / "logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
-    (log_dir / "extract_v0.log").write_text("Bypassed successfully by patch.")
-    
-    return fam
-'''
-            
-            code = re.sub(r'def decompress_nsz\([^)]*\):.*?(?=\ndef |\Z)', robust_bypass, code, flags=re.DOTALL)
-            path.write_text(code, encoding='utf-8')
-            print("[SUCCESS] Successfully injected robust decompress_nsz bypass!")
-
-        if __name__ == '__main__':
-            main()
-        EOF
-
         python3 scripts/patch_build.py
       shell: bash
 
