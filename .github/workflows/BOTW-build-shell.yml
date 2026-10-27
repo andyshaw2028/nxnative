@@ -24,24 +24,34 @@ jobs:
         if [ -f requirements.txt ]; then python3 -m pip install -r requirements.txt; fi
         if [ -f scripts/requirements.txt ]; then python3 -m pip install -r scripts/requirements.txt; fi
 
-    - name: Download and Inspect BotW Core
+    - name: Download and Arrange BotW Core
       run: |
         echo "Downloading lightweight core package (27MB)..."
         curl -L -o botw_core.zip "https://github.com/user-attachments/files/34022482/botw_core.zip"
         
         echo "Extracting core package..."
-        mkdir -p temp_extracted
-        unzip -q botw_core.zip -d temp_extracted/
+        mkdir -p workspace_game
+        unzip -q botw_core.zip -d workspace_game/
         
-        echo "=== Printing Full File Tree of Extracted Core ==="
-        find temp_extracted -print
+        # 调整目录结构：将 botw_core 内部的文件直接展平或规范化
+        # 如果解压出来是 workspace_game/botw_core/ExeFS，我们将其对齐
+        if [ -d workspace_game/botw_core ]; then
+          mv workspace_game/botw_core/* workspace_game/
+          rmdir workspace_game/botw_core
+        fi
+        
+        echo "=== Final Workspace Structure ==="
+        ls -la workspace_game/
+        ls -la workspace_game/ExeFS/ || ls -la workspace_game/exefs/ || true
       shell: bash
 
-    - name: Run Build Script (Test)
+    - name: Run Build Script
       run: |
-        KEYS_FILE=$(find temp_extracted -name "prod.keys" | head -n 1)
-        # 尝试将解压后的根目录直接传给脚本
-        python3 scripts/build_ipa_from_nsp.py -k "$KEYS_FILE" temp_extracted/
+        KEYS_FILE="workspace_game/prod.keys"
+        echo "Using keys file: $KEYS_FILE"
+
+        # 直接将整理好的工作目录传给构建脚本
+        python3 scripts/build_ipa_from_nsp.py -k "$KEYS_FILE" workspace_game/
       shell: bash
 
     - name: Upload Built IPA Artifact
