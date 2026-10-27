@@ -15,7 +15,7 @@ def main():
     replacement = "fams = fams or {0x01007EF00011E000: {'base': Path('workspace_core/botw_core'), 'updates': [], 'dlc': []}}"
     code = code.replace(target, replacement)
 
-    # 2. 升级 extract 函数旁路（避免在正则替换字符串中使用任何复杂转义符）
+    # 2. 定义提取旁路代码
     extract_replacement = (
         "def extract(nx, keys, fam, ver, build_dir, update, clone, logs, g):\n"
         "    print(f'[EXTRACT BYPASS] Directing extraction for version {ver} using lightweight core...')\n"
@@ -42,9 +42,10 @@ def main():
         "    return target_dir\n"
     )
     
-    code = re.sub(r'def extract\([^)]*\):.*?(?=\ndef |\Z)', extract_replacement, code, flags=re.DOTALL)
+    # 使用 lambda 函数作为 repl，彻底绕过 re.sub 的反斜杠转义解析
+    code = re.sub(r'def extract\([^)]*\):.*?(?=\ndef |\Z)', lambda m: extract_replacement, code, flags=re.DOTALL)
     py_path.write_text(code, encoding='utf-8')
-    print('[SUCCESS] Successfully patched extract function cleanly!')
+    print('[SUCCESS] Successfully patched extract function cleanly with lambda!')
 
     # 3. 保留 nx_extract 占位程序
     cs_path = Path('dm/tools/nx_extract/Program.cs')
