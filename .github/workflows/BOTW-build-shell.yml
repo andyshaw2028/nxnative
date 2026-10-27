@@ -24,34 +24,44 @@ jobs:
         if [ -f requirements.txt ]; then python3 -m pip install -r requirements.txt; fi
         if [ -f scripts/requirements.txt ]; then python3 -m pip install -r scripts/requirements.txt; fi
 
-    - name: Download and Arrange BotW Core
+    - name: Download and Construct Valid Title ID Structure
       run: |
         echo "Downloading lightweight core package (27MB)..."
         curl -L -o botw_core.zip "https://github.com/user-attachments/files/34022482/botw_core.zip"
         
         echo "Extracting core package..."
-        mkdir -p workspace_game
-        unzip -q botw_core.zip -d workspace_game/
+        mkdir -p temp_raw
+        unzip -q botw_core.zip -d temp_raw/
         
-        # 调整目录结构：将 botw_core 内部的文件直接展平或规范化
-        # 如果解压出来是 workspace_game/botw_core/ExeFS，我们将其对齐
-        if [ -d workspace_game/botw_core ]; then
-          mv workspace_game/botw_core/* workspace_game/
-          rmdir workspace_game/botw_core
+        # 创建一个标准的 Title ID 目录结构 (BotW ID: 01007EF00011E000)
+        TITLE_ID="01007EF00011E000"
+        mkdir -p valid_game/$TITLE_ID
+        
+        # 将解压出来的 ExeFS 放到 Title ID 目录下
+        # 兼容处理大小写文件夹名
+        if [ -d temp_raw/botw_core/ExeFS ]; then
+          cp -r temp_raw/botw_core/ExeFS valid_game/$TITLE_ID/
+        elif [ -d temp_raw/botw_core/exefs ]; then
+          cp -r temp_raw/botw_core/exefs valid_game/$TITLE_ID/ExeFS
         fi
         
-        echo "=== Final Workspace Structure ==="
-        ls -la workspace_game/
-        ls -la workspace_game/ExeFS/ || ls -la workspace_game/exefs/ || true
+        # 放置 prod.keys 密钥
+        if [ -f temp_raw/botw_core/prod.keys ]; then
+          cp temp_raw/botw_core/prod.keys valid_game/
+        fi
+        
+        echo "=== Checking Constructed Structure ==="
+        ls -la valid_game/
+        ls -la valid_game/$TITLE_ID/
       shell: bash
 
-    - name: Run Build Script
+    - name: Run Build Script with Validated Structure
       run: |
-        KEYS_FILE="workspace_game/prod.keys"
+        KEYS_FILE="valid_game/prod.keys"
         echo "Using keys file: $KEYS_FILE"
 
-        # 直接将整理好的工作目录传给构建脚本
-        python3 scripts/build_ipa_from_nsp.py -k "$KEYS_FILE" workspace_game/
+        # 将包含正确 Title ID 目录的根路径传给构建脚本
+        python3 scripts/build_ipa_from_nsp.py -k "$KEYS_FILE" valid_game/
       shell: bash
 
     - name: Upload Built IPA Artifact
