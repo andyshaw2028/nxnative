@@ -37,9 +37,9 @@ jobs:
         ls -la workspace_core/botw_core/
       shell: bash
 
-    - name: Patch Build Script with Single-Line Fallback
+    - name: Patch Build Script with Path Object Fallback
       run: |
-        # 使用单行表达式替换，完美规避缩进和 return 作用域污染
+        # 修复属性错误：将 base 包装为 Path 对象，支持 .suffix 属性调用
         python3 - << 'EOF'
         script_path = "scripts/build_ipa_from_nsp.py"
         with open(script_path, "r", encoding="utf-8") as f:
@@ -47,14 +47,14 @@ jobs:
 
         target_code = "if not fams: raise BuildError(f'no NSP with a readable title ID in {nsp_dir}')"
         
-        # 单行短路赋值：如果 fams 为空，直接注入合法的核心路径，不破坏任何函数结构
-        replacement_code = "fams = fams or {0x01007EF00011E000: {'base': 'workspace_core/botw_core', 'updates': [], 'dlc': []}}"
+        # 使用 Path('workspace_core/botw_core') 确保其具备 Path 属性
+        replacement_code = "fams = fams or {0x01007EF00011E000: {'base': Path('workspace_core/botw_core'), 'updates': [], 'dlc': []}}"
         
         if target_code in content:
             content = content.replace(target_code, replacement_code)
             with open(script_path, "w", encoding="utf-8") as f:
                 f.write(content)
-            print("[SUCCESS] Patched validation cleanly with single-line fallback!")
+            print("[SUCCESS] Patched with Path object successfully!")
         else:
             print("[ERROR] Target code not found!")
         EOF
