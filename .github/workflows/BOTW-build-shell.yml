@@ -16,7 +16,7 @@ jobs:
       with:
         python-version: '3.10'
 
-    - name: Set up .NET Core (Required for other tools if needed)
+    - name: Set up .NET Core
       uses: actions/setup-dotnet@v4
       with:
         dotnet-version: '8.0.x'
@@ -33,55 +33,56 @@ jobs:
       run: |
         echo "Downloading lightweight core package (27MB)..."
         curl -L -o botw_core.zip "https://github.com/user-attachments/files/34022482/botw_core.zip"
-        
         mkdir -p workspace_core
         unzip -q botw_core.zip -d workspace_core/
-        
-        # 复制一份密钥到根目录方便调用
         cp workspace_core/botw_core/prod.keys ./prod.keys
         ls -la workspace_core/botw_core/
       shell: bash
 
-    - name: Patch Build Script (Safe Single-Line Mode)
+    - name: Create and Run External Patch Script
       run: |
-        python3 -c "
+        # 在运行前动态写出一个干净的 Python 补丁脚本，彻底避开 YAML 转义和引号冲突
+        cat << 'EOF' > patch_script.py
+        import re
+        from pathlib import Path
+
         path = 'scripts/build_ipa_from_nsp.py'
         with open(path, 'r', encoding='utf-8') as f:
             code = f.read()
 
         # 1. 替换 NSP 强校验
-        target = 'if not fams: raise BuildError(f\'no NSP with a readable title ID in {nsp_dir}\')'
-        replacement = 'fams = fams or {0x01007EF00011E000: {\'base\': Path(\'workspace_core/botw_core\'), \'updates\': [], \'dlc\': []}}'
+        target = "if not fams: raise BuildError(f'no NSP with a readable title ID in {nsp_dir}')"
+        replacement = "fams = fams or {0x01007EF00011E000: {'base': Path('workspace_core/botw_core'), 'updates': [], 'dlc': []}}"
         code = code.replace(target, replacement)
 
-        # 2. 注入 ExeFS 直接复制旁路以绕过 nx_extract 文件流报错
-        bypass_logic = '''
+        # 2. 注入 ExeFS 直接复制旁路以绕过 nx_extract
+        bypass_logic = """
 def decompress_nsz(nsp_dir, app, fam, keys, env):
     import shutil
     from pathlib import Path
-    print(\"[BYPASS] Using direct ExeFS from lightweight core package...\")
-    build_dir = Path(nsp_dir) / f\"{app:016X}_build\"
-    extract_dir = build_dir / \"extract\"
+    print("[BYPASS] Using direct ExeFS from lightweight core package...")
+    build_dir = Path(nsp_dir) / f"{app:016X}_build"
+    extract_dir = build_dir / "extract"
     extract_dir.mkdir(parents=True, exist_ok=True)
     src_exefs = Path('workspace_core/botw_core/ExeFS')
     if not src_exefs.exists():
         src_exefs = Path('workspace_core/botw_core/exefs')
     if src_exefs.exists():
-        dest_exefs = extract_dir / \"ExeFS\"
+        dest_exefs = extract_dir / "ExeFS"
         if dest_exefs.exists():
             shutil.rmtree(dest_exefs)
         shutil.copytree(src_exefs, dest_exefs)
-        print(f\"[BYPASS] Copied ExeFS from {src_exefs} to {dest_exefs}\")
+        print(f"[BYPASS] Copied ExeFS from {src_exefs} to {dest_exefs}")
     return fam
-'''
-        # 替换原有的 decompress_nsz 函数
-        import re
+"""
         code = re.sub(r'def decompress_nsz\([^)]*\):.*?(?=\ndef |\Z)', bypass_logic, code, flags=re.DOTALL)
 
         with open(path, 'w', encoding='utf-8') as f:
             f.write(code)
-        print('[SUCCESS] Successfully patched build script safely!')
-        "
+        print('[SUCCESS] Successfully patched build script via external script!')
+        EOF
+
+        python3 patch_script.py
       shell: bash
 
     - name: Run Patched Build Script
