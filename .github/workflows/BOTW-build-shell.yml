@@ -1,11 +1,11 @@
 name: Build BotW iOS Native Shell
 
 on:
-  workflow_dispatch: # 支持在 GitHub 网页端手动点击按钮运行
+  workflow_dispatch:
 
 jobs:
   build:
-    runs-on: macos-latest # 使用云端 macOS 环境进行编译
+    runs-on: macos-latest
 
     steps:
     - name: Checkout repository
@@ -41,13 +41,12 @@ jobs:
 
     - name: Run Dedicated Patch Script
       run: |
-        # 直接调用外置纯净 Python 脚本，YAML 文件中再无任何转义和语法负担！
         python3 scripts/patch_build.py
       shell: bash
 
-    - name: Run Patched Build Script
+    - name: Run Patched Build Script with App Name
       run: |
-        python3 scripts/build_ipa_from_nsp.py -k prod.keys workspace_core/
+        python3 scripts/build_ipa_from_nsp.py --app-name "The Legend of Zelda: Breath of the Wild" -k prod.keys workspace_core/
       shell: bash
 
     - name: Upload Built IPA Artifact
