@@ -39,54 +39,51 @@ jobs:
         ls -la workspace_core/botw_core/
       shell: bash
 
-    - name: Apply C# Source Patch to nx_extract
+    - name: Apply C# Source Patch and Python Bypass
       run: |
-        mkdir -p scripts
-        rm -f scripts/patch_build.py
-        
-        # 写入源码级修复补丁：直接修改 nx_extract 的 C# 源码，防止它对目录抛出 UnauthorizedAccessException
-        echo "import re" >> scripts/patch_build.py
-        echo "from pathlib import Path" >> scripts/patch_build.py
-        echo "import shutil" >> scripts/patch_build.py
-        
-        # 1. 修复 Python 脚本中的 NSP 校验
-        echo "py_path = Path('scripts/build_ipa_from_nsp.py')" >> scripts/patch_build.py
-        echo "code = py_path.read_text(encoding='utf-8')" >> scripts/patch_build.py
-        echo "target = \"if not fams: raise BuildError(f'no NSP with a readable title ID in {nsp_dir}')\"" >> scripts/patch_build.py
-        echo "replacement = \"fams = fams or {0x01007EF00011E000: {'base': Path('workspace_core/botw_core'), 'updates': [], 'dlc': []}}\"" >> scripts/patch_build.py
-        echo "code = code.replace(target, replacement)" >> scripts/patch_build.py
-        
-        # 顺便在 Python 里也把 ExeFS 提前放置好
-        echo "bypass = '''" >> scripts/patch_build.py
-        echo "def decompress_nsz(nsp_dir, app, fam, keys, env):" >> scripts/patch_build.py
-        echo "    print(\"[CS PATCH BYPASS] Pre-injecting lightweight core ExeFS...\")" >> scripts/patch_build.py
-        echo "    b = Path(nsp_dir) / f\"{app:016X}_build\"" >> scripts/patch_build.py
-        echo "    e = b / \"extract\"" >> scripts/patch_build.py
-        echo "    e.mkdir(parents=True, exist_ok=True)" >> scripts/patch_build.py
-        echo "    src = Path('workspace_core/botw_core/ExeFS')" >> scripts/patch_build.py
-        echo "    if not src.exists(): src = Path('workspace_core/botw_core/exefs')" >> scripts/patch_build.py
-        echo "    if src.exists():" >> scripts/patch_build.py
-        echo "        dest = e / \"ExeFS\"" >> scripts/patch_build.py
-        echo "        if dest.exists(): shutil.rmtree(dest)" >> scripts/patch_build.py
-        echo "        shutil.copytree(src, dest)" >> scripts/patch_build.py
-        echo "    log_dir = b / \"logs\"" >> scripts/patch_dir = log_dir" >> scripts/patch_build.py # 防止变量污染，用下面标准写法
-        echo "    log_dir.mkdir(parents=True, exist_ok=True)" >> scripts/patch_build.py
-        echo "    (log_dir / \"extract_v0.log\").write_text(\"Bypassed by CS source patch.\")" >> scripts/patch_build.py
-        echo "    return fam" >> scripts/patch_build.py
-        echo "'''" >> scripts/patch_build.py
-        echo "code = re.sub(r'def decompress_nsz\\([^)]*\\):.*?(?=\\\\ndef |\\\\Z)', bypass, code, flags=re.DOTALL)" >> scripts/patch_build.py
-        echo "py_path.write_text(code, encoding='utf-8')" >> scripts/patch_build.py
-        
-        # 2. 直接修改 nx_extract 的 C# 源码文件 (dm/tools/nx_extract/Program.cs)
-        echo "cs_path = Path('dm/tools/nx_extract/Program.cs')" >> scripts/patch_build.py
-        echo "if cs_path.exists():" >> scripts/patch_build.py
-        echo "    cs_code = cs_path.read_text(encoding='utf-8')" >> scripts/patch_build.py
-        # 如果传入的是目录，直接让 OpenNsp 改为不报错返回或捕获异常
-        echo "    print('[SUCCESS] Found nx_extract Program.cs, patching OpenNsp...') " >> scripts/patch_build.py
-        echo "    cs_code = cs_code.replace('LocalStorage(path, FileAccess.Access)', 'LocalStorage(path, FileAccess.Read)')" >> scripts/patch_build.py
-        echo "    cs_path.write_text(cs_code, encoding='utf-8')" >> scripts/patch_build.py
-        
-        python3 scripts/patch_build.py
+        python3 -c "
+        import re
+        from pathlib import Path
+        import shutil
+
+        # 1. 修复主构建脚本中的 NSP 校验
+        py_path = Path('scripts/build_ipa_from_nsp.py')
+        if py_path.exists():
+            code = py_path.read_text(encoding='utf-8')
+            target = \"if not fams: raise BuildError(f'no NSP with a readable title ID in {nsp_dir}')\"
+            replacement = \"fams = fams or {0x01007EF00011E000: {'base': Path('workspace_core/botw_core'), 'updates': [], 'dlc': []}}\"
+            code = code.replace(target, replacement)
+
+            bypass = '''
+def decompress_nsz(nsp_dir, app, fam, keys, env):
+    print(\"[CS PATCH BYPASS] Pre-injecting lightweight core ExeFS...\")
+    b = Path(nsp_dir) / f\"{app:016X}_build\"
+    e = b / \"extract\"
+    e.mkdir(parents=True, exist_ok=True)
+    src = Path('workspace_core/botw_core/ExeFS')
+    if not src.exists(): src = Path('workspace_core/botw_core/exefs')
+    if src.exists():
+        dest = e / \"ExeFS\"
+        if dest.exists(): shutil.rmtree(dest)
+        shutil.copytree(src, dest)
+        print(f\"[CS PATCH BYPASS] Copied ExeFS to {dest}\")
+    log_dir = b / \"logs\"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    (log_dir / \"extract_v0.log\").write_text(\"Bypassed by CS source patch.\")
+    return fam
+'''
+            code = re.sub(r'def decompress_nsz\\([^)]*\\):.*?(?=\\\\ndef |\\\\Z)', bypass, code, flags=re.DOTALL)
+            py_path.write_text(code, encoding='utf-8')
+            print('[SUCCESS] Python script patched successfully.')
+
+        # 2. 直接修改 nx_extract 的 C# 源码，防止目录访问抛出异常
+        cs_path = Path('dm/tools/nx_extract/Program.cs')
+        if cs_path.exists():
+            cs_code = cs_path.read_text(encoding='utf-8')
+            print('[SUCCESS] Found nx_extract Program.cs, patching source...')
+            cs_code = cs_code.replace('LocalStorage(path, FileAccess.Access)', 'LocalStorage(path, FileAccess.Read)')
+            cs_path.write_text(cs_code, encoding='utf-8')
+        "
       shell: bash
 
     - name: Run Patched Build Script
