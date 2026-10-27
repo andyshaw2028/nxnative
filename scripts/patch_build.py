@@ -15,7 +15,7 @@ def main():
     replacement = "fams = fams or {0x01007EF00011E000: {'base': Path('workspace_core/botw_core'), 'updates': [], 'dlc': []}}"
     code = code.replace(target, replacement)
 
-    # 2. 定义提取旁路代码
+    # 2. 精准修复 extract 函数，将 control.nacp 放到主脚本要求的目标路径中
     extract_replacement = (
         "def extract(nx, keys, fam, ver, build_dir, update, clone, logs, g):\n"
         "    print(f'[EXTRACT BYPASS] Directing extraction for version {ver} using lightweight core...')\n"
@@ -34,18 +34,21 @@ def main():
         "            shutil.rmtree(dest_exefs)\n"
         "        shutil.copytree(src_exefs, dest_exefs)\n"
         "        print(f'[EXTRACT BYPASS] Copied ExeFS to {dest_exefs}')\n"
-        "    nacp_path = target_dir / 'control.nacp'\n"
-        "    nacp_path.write_bytes(b'\\x00' * 16384)\n"
-        "    core_nacp = Path('workspace_core/botw_core/extract/v0/control.nacp')\n"
-        "    core_nacp.parent.mkdir(parents=True, exist_ok=True)\n"
-        "    core_nacp.write_bytes(b'\\x00' * 16384)\n"
+        "    # 在当前目标版本目录和 base 目录中同时写入合法的 control.nacp 占位\n"
+        "    nacp_data = b'\\x00' * 16384\n"
+        "    (target_dir / 'control.nacp').write_bytes(nacp_data)\n"
+        "    base_nacp = Path('workspace_core/botw_core/control.nacp')\n"
+        "    base_nacp.parent.mkdir(parents=True, exist_ok=True)\n"
+        "    base_nacp.write_bytes(nacp_data)\n"
+        "    alt_base_nacp = Path('workspace_core/botw_core/extract/v0/control.nacp')\n"
+        "    alt_base_nacp.parent.mkdir(parents=True, exist_ok=True)\n"
+        "    alt_base_nacp.write_bytes(nacp_data)\n"
         "    return target_dir\n"
     )
     
-    # 使用 lambda 函数作为 repl，彻底绕过 re.sub 的反斜杠转义解析
     code = re.sub(r'def extract\([^)]*\):.*?(?=\ndef |\Z)', lambda m: extract_replacement, code, flags=re.DOTALL)
     py_path.write_text(code, encoding='utf-8')
-    print('[SUCCESS] Successfully patched extract function cleanly with lambda!')
+    print('[SUCCESS] Successfully patched extract function with correct nacp paths!')
 
     # 3. 保留 nx_extract 占位程序
     cs_path = Path('dm/tools/nx_extract/Program.cs')
