@@ -24,44 +24,26 @@ jobs:
         if [ -f requirements.txt ]; then python3 -m pip install -r requirements.txt; fi
         if [ -f scripts/requirements.txt ]; then python3 -m pip install -r scripts/requirements.txt; fi
 
-    - name: Download and Construct Valid Title ID Structure
+    - name: Inspect Script Validation Logic
+      run: |
+        echo "=== Searching for title ID validation logic in script ==="
+        grep -n -C 5 "no NSP with a readable title ID" scripts/build_ipa_from_nsp.py || true
+      shell: bash
+
+    - name: Download and Prepare Core Package
       run: |
         echo "Downloading lightweight core package (27MB)..."
         curl -L -o botw_core.zip "https://github.com/user-attachments/files/34022482/botw_core.zip"
-        
-        echo "Extracting core package..."
-        mkdir -p temp_raw
-        unzip -q botw_core.zip -d temp_raw/
-        
-        # 创建一个标准的 Title ID 目录结构 (BotW ID: 01007EF00011E000)
-        TITLE_ID="01007EF00011E000"
-        mkdir -p valid_game/$TITLE_ID
-        
-        # 将解压出来的 ExeFS 放到 Title ID 目录下
-        # 兼容处理大小写文件夹名
-        if [ -d temp_raw/botw_core/ExeFS ]; then
-          cp -r temp_raw/botw_core/ExeFS valid_game/$TITLE_ID/
-        elif [ -d temp_raw/botw_core/exefs ]; then
-          cp -r temp_raw/botw_core/exefs valid_game/$TITLE_ID/ExeFS
-        fi
-        
-        # 放置 prod.keys 密钥
-        if [ -f temp_raw/botw_core/prod.keys ]; then
-          cp temp_raw/botw_core/prod.keys valid_game/
-        fi
-        
-        echo "=== Checking Constructed Structure ==="
-        ls -la valid_game/
-        ls -la valid_game/$TITLE_ID/
+        mkdir -p test_env
+        unzip -q botw_core.zip -d test_env/
+        ls -la test_env/
+        ls -la test_env/botw_core/ || true
       shell: bash
 
-    - name: Run Build Script with Validated Structure
+    - name: Run Build Script (Diagnostic)
       run: |
-        KEYS_FILE="valid_game/prod.keys"
-        echo "Using keys file: $KEYS_FILE"
-
-        # 将包含正确 Title ID 目录的根路径传给构建脚本
-        python3 scripts/build_ipa_from_nsp.py -k "$KEYS_FILE" valid_game/
+        KEYS_FILE=$(find test_env -name "prod.keys" | head -n 1)
+        python3 scripts/build_ipa_from_nsp.py -k "$KEYS_FILE" test_env/
       shell: bash
 
     - name: Upload Built IPA Artifact
