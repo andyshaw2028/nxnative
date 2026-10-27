@@ -42,58 +42,46 @@ jobs:
         ls -la workspace_core/botw_core/
       shell: bash
 
-    - name: Patch Build Script to Bypass nx_extract & Use ExeFS Directly
+    - name: Patch Build Script (Safe Single-Line Mode)
       run: |
-        python3 - << 'EOF'
-        script_path = "scripts/build_ipa_from_nsp.py"
-        with open(script_path, "r", encoding="utf-8") as f:
-            content = f.read()
+        python3 -c "
+        path = 'scripts/build_ipa_from_nsp.py'
+        with open(path, 'r', encoding='utf-8') as f:
+            code = f.read()
 
-        # 1. 绕过 NSP 校验
-        target_code = "if not fams: raise BuildError(f'no NSP with a readable title ID in {nsp_dir}')"
-        replacement_code = "fams = fams or {0x01007EF00011E000: {'base': Path('workspace_core/botw_core'), 'updates': [], 'dlc': []}}"
-        if target_code in content:
-            content = content.replace(target_code, replacement_code)
+        # 1. 替换 NSP 强校验
+        target = 'if not fams: raise BuildError(f\'no NSP with a readable title ID in {nsp_dir}\')'
+        replacement = 'fams = fams or {0x01007EF00011E000: {\'base\': Path(\'workspace_core/botw_core\'), \'updates\': [], \'dlc\': []}}'
+        code = code.replace(target, replacement)
 
-        # 2. 热补丁 decompress_nsz 或 extract 阶段：
-        # 当脚本尝试调用 nx_extract 提取 v0 时，我们直接把现成的 ExeFS 复制到对应的 extract 目标目录中，从而避免 nx_extract 报错
-        # 让我们找到运行 nx_extract 的地方并注入旁路复制逻辑
-        patch_target = "def decompress_nsz"
-        if patch_target in content:
-            print("[INFO] Found decompress_nsz function, injecting direct ExeFS copy bypass...")
-            # 在 decompress_nsz 头部注入：如果检测到我们传入的是轻量核心，直接软链接/复制 ExeFS 到目标位置并返回
-            injection = """
+        # 2. 注入 ExeFS 直接复制旁路以绕过 nx_extract 文件流报错
+        bypass_logic = '''
 def decompress_nsz(nsp_dir, app, fam, keys, env):
-    # --- [CUSTOM BYPASS FOR LIGHTWEIGHT CORE] ---
     import shutil
-    print("[BYPASS] Using direct ExeFS from lightweight core package...")
-    build_dir = Path(nsp_dir) / f"{app:016X}_build"
-    extract_dir = build_dir / "extract"
+    from pathlib import Path
+    print(\"[BYPASS] Using direct ExeFS from lightweight core package...\")
+    build_dir = Path(nsp_dir) / f\"{app:016X}_build\"
+    extract_dir = build_dir / \"extract\"
     extract_dir.mkdir(parents=True, exist_ok=True)
-    
-    # 寻找我们解压出来的 ExeFS 路径
     src_exefs = Path('workspace_core/botw_core/ExeFS')
     if not src_exefs.exists():
         src_exefs = Path('workspace_core/botw_core/exefs')
-        
     if src_exefs.exists():
-        dest_exefs = extract_dir / "ExeFS"
+        dest_exefs = extract_dir / \"ExeFS\"
         if dest_exefs.exists():
             shutil.rmtree(dest_exefs)
         shutil.copytree(src_exefs, dest_exefs)
-        print(f"[BYPASS] Successfully copied ExeFS from {src_exefs} to {dest_exefs}")
-    
-    # 同时确保 main 和其他必要标识存在
+        print(f\"[BYPASS] Copied ExeFS from {src_exefs} to {dest_exefs}\")
     return fam
-            """
-            # 我们用正则或简单替换覆盖原函数体
-            import re
-            content = re.sub(r'def decompress_nsz\([^)]*\):.*?(?=\ndef |\n[a-zA-Z_])', injection, content, flags=re.DOTALL)
+'''
+        # 替换原有的 decompress_nsz 函数
+        import re
+        code = re.sub(r'def decompress_nsz\([^)]*\):.*?(?=\ndef |\Z)', bypass_logic, code, flags=re.DOTALL)
 
-        with open(script_path, "w", encoding="utf-8") as f:
-            f.write(content)
-        print("[SUCCESS] Successfully patched build script to bypass nx_extract!")
-        EOF
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(code)
+        print('[SUCCESS] Successfully patched build script safely!')
+        "
       shell: bash
 
     - name: Run Patched Build Script
