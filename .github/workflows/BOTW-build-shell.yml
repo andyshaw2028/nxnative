@@ -16,9 +16,15 @@ jobs:
       with:
         python-version: '3.10'
 
-    - name: Install macOS build dependencies
+    - name: Install macOS build & Python dependencies
       run: |
         brew install xcodegen zstd spirv-cross glslang
+        python3 -m pip install --upgrade pip
+        # 安装项目运行所需的 Python 库（特别是报错缺失的 lz4）
+        python3 -m pip install lz4
+        # 如果仓库里有 requirements.txt，顺便把它装上
+        if [ -f requirements.txt ]; then python3 -m pip install -r requirements.txt; fi
+        if [ -f scripts/requirements.txt ]; then python3 -m pip install -r scripts/requirements.txt; fi
 
     - name: Download BotW Core (exefs & keys)
       run: |
