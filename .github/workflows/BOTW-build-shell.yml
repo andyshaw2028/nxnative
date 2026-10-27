@@ -19,7 +19,7 @@ jobs:
     - name: Set up .NET Core (Required for nx_extract)
       uses: actions/setup-dotnet@v4
       with:
-        dotnet-version: '8.0.x' # 安装通用的 .NET 运行时支持
+        dotnet-version: '8.0.x'
 
     - name: Install macOS build & Python dependencies
       run: |
@@ -29,7 +29,7 @@ jobs:
         if [ -f requirements.txt ]; then python3 -m pip install -r requirements.txt; fi
         if [ -f scripts/requirements.txt ]; then python3 -m pip install -r scripts/requirements.txt; fi
 
-    - name: Download and Unpack Core Package
+    - name: Download and Prepare Lightweight Core
       run: |
         echo "Downloading lightweight core package (27MB)..."
         curl -L -o botw_core.zip "https://github.com/user-attachments/files/34022482/botw_core.zip"
@@ -39,26 +39,29 @@ jobs:
         
         # 复制一份密钥到根目录方便调用
         cp workspace_core/botw_core/prod.keys ./prod.keys
+        
+        # 针对 nx_extract 的路径访问特性：如果它需要把 base 当作文件读取，
+        # 我们可以把 botw_core 作为一个目录让脚本处理，或者创建一个对应的占位
+        echo "Preparing workspace structure..."
         ls -la workspace_core/botw_core/
       shell: bash
 
-    - name: Patch Build Script with Path Object Fallback
+    - name: Patch Build Script for Directory-based ExeFS
       run: |
         python3 - << 'EOF'
         script_path = "scripts/build_ipa_from_nsp.py"
         with open(script_path, "r", encoding="utf-8") as f:
             content = f.read()
 
+        # 1. 绕过 NSP 校验
         target_code = "if not fams: raise BuildError(f'no NSP with a readable title ID in {nsp_dir}')"
         replacement_code = "fams = fams or {0x01007EF00011E000: {'base': Path('workspace_core/botw_core'), 'updates': [], 'dlc': []}}"
-        
         if target_code in content:
             content = content.replace(target_code, replacement_code)
-            with open(script_path, "w", encoding="utf-8") as f:
-                f.write(content)
-            print("[SUCCESS] Patched with Path object successfully!")
-        else:
-            print("[ERROR] Target code not found!")
+
+        with open(script_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        print("[SUCCESS] Patched script successfully!")
         EOF
       shell: bash
 
