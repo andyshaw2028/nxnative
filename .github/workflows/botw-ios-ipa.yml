@@ -1,0 +1,141 @@
+name: BOTW iOS IPA (Windows-prepared inputs)
+
+on:
+  workflow_dispatch:
+    inputs:
+      game_language:
+        description: "Game language code"
+        required: true
+        default: "zh-CN"
+        type: choice
+        options:
+          - zh-CN
+          - en-US
+          - ja-JP
+      show_fps:
+        description: "Show FPS counter"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: botw-ios-ipa-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-ipa:
+    name: Build unsigned BOTW IPA
+    if: github.ref == 'refs/heads/test-romfsarc-integration'
+    runs-on: macos-15
+    timeout-minutes: 360
+    env:
+      GAME: "01007EF00011E000"
+      DM_LANG: ${{ inputs.game_language }}
+      DM_SHOW_FPS: ${{ inputs.show_fps && '1' || '0' }}
+      W: ${{ runner.temp }}/botw-work
+      PATCHED: ${{ runner.temp }}/botw-work/build/patched_v1114112
+      ROMFS: ${{ runner.temp }}/botw-work/data/v1114112/RomFS
+      MSL_IOS: ${{ runner.temp }}/botw-work/build/ios/dmsh_b
+      DM_BUILD_BUNDLE_URL: ${{ secrets.DM_BUILD_BUNDLE_URL }}
+
+    steps:
+      - name: Check branch and checkout source
+        uses: actions/checkout@v4
+        with:
+          ref: test-romfsarc-integration
+          lfs: true
+
+      - name: Show runner toolchain
+        run: |
+          set -euxo pipefail
+          sw_vers
+          xcodebuild -version
+          python3 --version
+          git rev-parse HEAD
+
+      - name: Check required secret
+        shell: bash
+        run: |
+          if [ -z "${DM_BUILD_BUNDLE_URL}" ]; then
+            echo "::error::Missing repository secret DM_BUILD_BUNDLE_URL. Upload the Windows-prepared build bundle to private storage and add its download URL as a repository Actions secret."
+            exit 1
+          fi
+
+      - name: Download Windows-prepared build bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/bundle"
+          curl --fail --location --retry 3 --retry-delay 5 \
+            --output "${RUNNER_TEMP}/botw-build-bundle.tar.zst" \
+            "${DM_BUILD_BUNDLE_URL}"
+          file "${RUNNER_TEMP}/botw-build-bundle.tar.zst"
+          tar --zstd -tf "${RUNNER_TEMP}/botw-build-bundle.tar.zst" | head -40
+          tar --zstd -xf "${RUNNER_TEMP}/botw-build-bundle.tar.zst" -C "${RUNNER_TEMP}/bundle"
+          if [ ! -d "${RUNNER_TEMP}/bundle/botw-work" ]; then
+            echo "::error::Bundle must contain top-level botw-work/ directory."
+            exit 1
+          fi
+          rm -rf "${W}"
+          mv "${RUNNER_TEMP}/bundle/botw-work" "${W}"
+
+      - name: Validate Windows-prepared inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "dm/games/01007EF00011E000/game.tsv"
+          test -f "${W}/build/patched_v1114112/main.patched.bin"
+          test -f "${W}/build/patched_v1114112/sdk.patched.bin"
+          test -f "${W}/build/patched_v1114112/subsdk0.patched.bin"
+          test -f "${W}/build/patched_v1114112/main.fixups.tsv"
+          test -f "${W}/build/patched_v1114112/sdk.fixups.tsv"
+          test -f "${W}/build/patched_v1114112/subsdk0.fixups.tsv"
+          test -f "${ROMFS}/Pack/Bootup_Graphics.pack"
+          test -f "dm/games/01007EF00011E000/dmsh_chain.h"
+          find "${MSL_IOS}" -type f -name '*_b.metallib' -print -quit | grep -q .
+          echo "Prepared inputs validated."
+          du -sh "${W}" "${ROMFS}" "${PATCHED}" "${MSL_IOS}"
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install xcodegen
+          python3 -m pip install --user --break-system-packages capstone lz4 fonttools
+          echo "$HOME/Library/Python/3.*/bin" >> "$GITHUB_PATH"
+          python3 -c "import capstone, lz4, fontTools; print('Python build dependencies OK')"
+          xcodegen --version
+
+      - name: Build unsigned IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/ipa-output"
+          export GAME W PATCHED ROMFS MSL_IOS DM_LANG DM_SHOW_FPS
+          export AOC=""
+          export FONT_PY=python3
+          export STD_FONT="/System/Library/Fonts/Supplemental/Arial Unicode.ttf"
+          bash dm/ios/tools/build_ipa.sh "${RUNNER_TEMP}/ipa-output/ZeldaBreathOfTheWild.ipa"
+
+      - name: Validate IPA and calculate checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          IPA="${RUNNER_TEMP}/ipa-output/ZeldaBreathOfTheWild.ipa"
+          test -s "$IPA"
+          unzip -t "$IPA"
+          shasum -a 256 "$IPA" | tee "${RUNNER_TEMP}/ipa-output/SHA256SUMS.txt"
+          ls -lh "$IPA"
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZeldaBreathOfTheWild-IPA-${{ github.run_number }}
+          path: |
+            ${{ runner.temp }}/ipa-output/ZeldaBreathOfTheWild.ipa
+            ${{ runner.temp }}/ipa-output/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 7
