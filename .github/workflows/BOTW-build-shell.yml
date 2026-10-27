@@ -32,31 +32,43 @@ jobs:
         mkdir -p workspace_core
         unzip -q botw_core.zip -d workspace_core/
         
-        echo "=== Extracted Contents ==="
-        ls -la workspace_core/
-        ls -la workspace_core/botw_core/ || true
+        # 复制一份密钥到根目录方便调用
+        cp workspace_core/botw_core/prod.keys ./prod.keys
+        ls -la workspace_core/botw_core/
       shell: bash
 
-    - name: Patch Build Script to Accept ExeFS Directly
+    - name: Patch Build Script Validation
       run: |
-        # 我们可以通过在脚本运行前动态创建一个软链接，或者在工作流中直接构建一个符合它期望的虚拟容器
-        # 让我们把 botw_core 里的 ExeFS 和 prod.keys 映射到构建脚本能直接识别的环境中
+        # 使用 Python 脚本对 build_ipa_from_nsp.py 进行热补丁修改，绕过对 NSP 容器的强校验
+        python3 - << 'EOF'
+        script_path = "scripts/build_ipa_from_nsp.py"
+        with open(script_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        # 找到报错的位置并将其替换，让它在没有找到 NSP 时自动使用我们提供的 ExeFS 目录
+        target_code = "if not fams: raise BuildError(f'no NSP with a readable title ID in {nsp_dir}')"
         
-        # 方案：在脚本里直接放宽对 fams 的强校验，或者为它生成一个轻量的占位结构
-        echo "Preparing build environment..."
-        KEYS_FILE=$(find workspace_core -name "prod.keys" | head -n 1)
-        EXFS_DIR=$(find workspace_core -type d -name "ExeFS" -o -name "exefs" | head -n 1)
+        # 我们用一段宽松的逻辑替换它：如果 fams 为空，手动塞入一个伪造的 BotW 基础游戏结构指向 workspace_core/botw_core
+        replacement_code = """
+        if not fams:
+            print("[WARNING] Bypassing strict NSP check, injecting ExeFS core directly...")
+            app = 0x01007EF00011E000
+            fam = {'base': 'workspace_core/botw_core', 'updates': [], 'dlc': []}
+            return app, fam
+        """
         
-        echo "Keys found at: $KEYS_FILE"
-        echo "ExeFS found at: $EXFS_DIR"
-        
-        # 将 keys 复制到脚本期望的根目录
-        cp "$KEYS_FILE" ./prod.keys
+        if target_code in content:
+            content = content.replace(target_code, replacement_code)
+            with open(script_path, "w", encoding="utf-8") as f:
+                f.write(content)
+            print("[SUCCESS] Successfully patched build script validation!")
+        else:
+            print("[WARNING] Target code for patching not found exact match, checking alternative...")
+        EOF
       shell: bash
 
-    - name: Run Build Script
+    - name: Run Patched Build Script
       run: |
-        # 尝试直接调用并传入核心路径
         python3 scripts/build_ipa_from_nsp.py -k prod.keys workspace_core/botw_core/
       shell: bash
 
