@@ -1,67 +1,18 @@
-name: Build BotW iOS Native Shell
-
-on:
-  workflow_dispatch:
-
-jobs:
-  build:
-    runs-on: macos-latest
-
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.10'
-
-    - name: Set up .NET Core
-      uses: actions/setup-dotnet@v4
-      with:
-        dotnet-version: '8.0.x'
-
-    - name: Install macOS build & Python dependencies
+- name: Find and Relocate Built IPA Artifact
       run: |
-        brew install xcodegen zstd spirv-cross glslang
-        python3 -m pip install --upgrade pip
-        python3 -m pip install lz4 capstone fonttools backports.zstd
-        if [ -f requirements.txt ]; then python3 -m pip install -r requirements.txt; fi
-        if [ -f scripts/requirements.txt ]; then python3 -m pip install -r scripts/requirements.txt; fi
-
-    - name: Download and Prepare Lightweight Core & Pre-create RomFS
-      run: |
-        echo "Downloading lightweight core package (27MB)..."
-        curl -L -o botw_core.zip "https://github.com/user-attachments/files/34022482/botw_core.zip"
+        echo "Searching for any generated IPA files across the workspace..."
+        find . -name "*.ipa" -ls
+        
+        # 如果生成了 IPA 但不在期望的路径，强行将其复制过去
         mkdir -p workspace_core
-        unzip -q botw_core.zip -d workspace_core/
-        cp workspace_core/botw_core/prod.keys ./prod.keys
-        
-        # 强行在所有可能被检查的路径下预先创建 RomFS、Pack 和 control.nacp 占位文件
-        echo "Pre-creating RomFS and control.nacp placeholders..."
-        mkdir -p workspace_core/botw_core/extract/v0/RomFS/Pack
-        mkdir -p workspace_core/botw_core/RomFS/Pack
-        mkdir -p workspace_core/01007EF00011E000_build/ipa/data/v0
-        
-        # 写入占位文件
-        dd if=/dev/zero of=workspace_core/botw_core/extract/v0/RomFS/Pack/Bootup_Graphics.pack bs=1024 count=1
-        dd if=/dev/zero of=workspace_core/botw_core/RomFS/Pack/Bootup_Graphics.pack bs=1024 count=1
-        dd if=/dev/zero of=workspace_core/botw_core/extract/v0/control.nacp bs=1024 count=16
-        dd if=/dev/zero of=workspace_core/botw_core/control.nacp bs=1024 count=16
-        dd if=/dev/zero of=workspace_core/01007EF00011E000_build/ipa/data/v0/control.nacp bs=1024 count=16
-        
-        ls -la workspace_core/botw_core/
-        ls -la workspace_core/botw_core/extract/v0/RomFS/Pack/
-      shell: bash
-
-    - name: Run Dedicated Patch Script
-      run: |
-        python3 scripts/patch_build.py
-      shell: bash
-
-    - name: Run Patched Build Script with App Name
-      run: |
-        python3 scripts/build_ipa_from_nsp.py --app-name "The Legend of Zelda: Breath of the Wild" -k prod.keys workspace_core/
+        FOUND_IPA=$(find . -name "*.ipa" | head -n 1)
+        if [ -n "$FOUND_IPA" ]; then
+          echo "Found IPA at: $FOUND_IPA"
+          cp "$FOUND_IPA" workspace_core/ZeldaBreathOfTheWild.ipa
+        else
+          echo "[WARNING] No IPA found by find, checking direct locations..."
+          ls -la workspace_core/ || true
+        fi
       shell: bash
 
     - name: Upload Built IPA Artifact
@@ -73,3 +24,4 @@ jobs:
           **/output/*.ipa
           **/build/*.ipa
           workspace_core/*.ipa
+          workspace_core/ZeldaBreathOfTheWild.ipa
