@@ -1,0 +1,52 @@
+name: Build BotW iOS Native Shell
+
+on:
+  workflow_dispatch: # 支持在 GitHub 网页端手动点击按钮运行
+
+jobs:
+  build:
+    runs-on: macos-latest # 使用云端 macOS 环境进行编译
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Install macOS build dependencies
+      run: |
+        brew install xcodegen zstd spirv-cross glslang
+
+    - name: Download BotW Core (exefs & keys)
+      run: |
+        echo "Downloading lightweight core package (27MB)..."
+        curl -L -o botw_core.zip "https://github.com/user-attachments/files/34022482/botw_core.zip"
+        echo "Extracting core package..."
+        unzip botw_core.zip -d input_core/
+        ls -la input_core/
+
+    - name: Inspect Workspace and Scripts
+      run: |
+        echo "=== Root Files ==="
+        ls -la
+        echo "=== Scripts Directory ==="
+        ls -la scripts/ || true
+
+    - name: Run Build Script
+      run: |
+        # 注意：如果你的构建脚本名字不是 build_ipa_from_nsp.py，
+        # 请根据上面打印出的 scripts/ 目录内容调整文件名和参数
+        python3 scripts/build_ipa_from_nsp.py --exefs input_core/exefs --keys input_core/prod.keys || python3 scripts/build.py --help
+      shell: bash
+
+    - name: Upload Built IPA Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: BotW-iOS-IPA
+        path: |
+          *.ipa
+          **/output/*.ipa
+          **/build/*.ipa
