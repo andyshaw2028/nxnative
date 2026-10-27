@@ -24,26 +24,40 @@ jobs:
         if [ -f requirements.txt ]; then python3 -m pip install -r requirements.txt; fi
         if [ -f scripts/requirements.txt ]; then python3 -m pip install -r scripts/requirements.txt; fi
 
-    - name: Inspect Script Validation Logic
-      run: |
-        echo "=== Searching for title ID validation logic in script ==="
-        grep -n -C 5 "no NSP with a readable title ID" scripts/build_ipa_from_nsp.py || true
-      shell: bash
-
-    - name: Download and Prepare Core Package
+    - name: Download and Unpack Core Package
       run: |
         echo "Downloading lightweight core package (27MB)..."
         curl -L -o botw_core.zip "https://github.com/user-attachments/files/34022482/botw_core.zip"
-        mkdir -p test_env
-        unzip -q botw_core.zip -d test_env/
-        ls -la test_env/
-        ls -la test_env/botw_core/ || true
+        
+        mkdir -p workspace_core
+        unzip -q botw_core.zip -d workspace_core/
+        
+        echo "=== Extracted Contents ==="
+        ls -la workspace_core/
+        ls -la workspace_core/botw_core/ || true
       shell: bash
 
-    - name: Run Build Script (Diagnostic)
+    - name: Patch Build Script to Accept ExeFS Directly
       run: |
-        KEYS_FILE=$(find test_env -name "prod.keys" | head -n 1)
-        python3 scripts/build_ipa_from_nsp.py -k "$KEYS_FILE" test_env/
+        # 我们可以通过在脚本运行前动态创建一个软链接，或者在工作流中直接构建一个符合它期望的虚拟容器
+        # 让我们把 botw_core 里的 ExeFS 和 prod.keys 映射到构建脚本能直接识别的环境中
+        
+        # 方案：在脚本里直接放宽对 fams 的强校验，或者为它生成一个轻量的占位结构
+        echo "Preparing build environment..."
+        KEYS_FILE=$(find workspace_core -name "prod.keys" | head -n 1)
+        EXFS_DIR=$(find workspace_core -type d -name "ExeFS" -o -name "exefs" | head -n 1)
+        
+        echo "Keys found at: $KEYS_FILE"
+        echo "ExeFS found at: $EXFS_DIR"
+        
+        # 将 keys 复制到脚本期望的根目录
+        cp "$KEYS_FILE" ./prod.keys
+      shell: bash
+
+    - name: Run Build Script
+      run: |
+        # 尝试直接调用并传入核心路径
+        python3 scripts/build_ipa_from_nsp.py -k prod.keys workspace_core/botw_core/
       shell: bash
 
     - name: Upload Built IPA Artifact
