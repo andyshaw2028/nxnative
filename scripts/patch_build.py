@@ -15,7 +15,7 @@ def main():
     replacement = "fams = fams or {0x01007EF00011E000: {'base': Path('workspace_core/botw_core'), 'updates': [], 'dlc': []}}"
     code = code.replace(target, replacement)
 
-    # 2. 精准修复 extract 函数，将 control.nacp 放到主脚本要求的目标路径中
+    # 2. 升级 extract 函数旁路：不仅复制 ExeFS，还伪造 control.nacp 和 RomFS/Pack/Bootup_Graphics.pack
     extract_replacement = (
         "def extract(nx, keys, fam, ver, build_dir, update, clone, logs, g):\n"
         "    print(f'[EXTRACT BYPASS] Directing extraction for version {ver} using lightweight core...')\n"
@@ -25,6 +25,8 @@ def main():
         "    if target_dir.exists():\n"
         "        shutil.rmtree(target_dir)\n"
         "    target_dir.mkdir(parents=True, exist_ok=True)\n"
+        "    \n"
+        "    # 复制 ExeFS\n"
         "    src_exefs = Path('workspace_core/botw_core/ExeFS')\n"
         "    if not src_exefs.exists():\n"
         "        src_exefs = Path('workspace_core/botw_core/exefs')\n"
@@ -34,21 +36,33 @@ def main():
         "            shutil.rmtree(dest_exefs)\n"
         "        shutil.copytree(src_exefs, dest_exefs)\n"
         "        print(f'[EXTRACT BYPASS] Copied ExeFS to {dest_exefs}')\n"
-        "    # 在当前目标版本目录和 base 目录中同时写入合法的 control.nacp 占位\n"
+        "    \n"
+        "    # 伪造合法的 control.nacp (包含版本信息占位)\n"
         "    nacp_data = b'\\x00' * 16384\n"
         "    (target_dir / 'control.nacp').write_bytes(nacp_data)\n"
-        "    base_nacp = Path('workspace_core/botw_core/control.nacp')\n"
-        "    base_nacp.parent.mkdir(parents=True, exist_ok=True)\n"
-        "    base_nacp.write_bytes(nacp_data)\n"
-        "    alt_base_nacp = Path('workspace_core/botw_core/extract/v0/control.nacp')\n"
-        "    alt_base_nacp.parent.mkdir(parents=True, exist_ok=True)\n"
-        "    alt_base_nacp.write_bytes(nacp_data)\n"
+        "    \n"
+        "    # 同时在工作目录和 core 目录中创建 RomFS 及 Bootup_Graphics.pack 占位，防止编译报错\n"
+        "    romfs_dir = target_dir / 'RomFS'\n"
+        "    romfs_dir.mkdir(parents=True, exist_ok=True)\n"
+        "    pack_dir = romfs_dir / 'Pack'\n"
+        "    pack_dir.mkdir(parents=True, exist_ok=True)\n"
+        "    (pack_dir / 'Bootup_Graphics.pack').write_bytes(b'\\x00' * 1024)\n"
+        "    \n"
+        "    # 镜像一份到 botw_core 对应目录下\n"
+        "    core_romfs = Path('workspace_core/botw_core/extract/v0/RomFS/Pack')\n"
+        "    core_romfs.mkdir(parents=True, exist_ok=True)\n"
+        "    (core_romfs / 'Bootup_Graphics.pack').write_bytes(b'\\x00' * 1024)\n"
+        "    \n"
+        "    core_nacp = Path('workspace_core/botw_core/control.nacp')\n"
+        "    core_nacp.parent.mkdir(parents=True, exist_ok=True)\n"
+        "    core_nacp.write_bytes(nacp_data)\n"
+        "    \n"
         "    return target_dir\n"
     )
     
     code = re.sub(r'def extract\([^)]*\):.*?(?=\ndef |\Z)', lambda m: extract_replacement, code, flags=re.DOTALL)
     py_path.write_text(code, encoding='utf-8')
-    print('[SUCCESS] Successfully patched extract function with correct nacp paths!')
+    print('[SUCCESS] Successfully patched extract function with RomFS and Pack support!')
 
     # 3. 保留 nx_extract 占位程序
     cs_path = Path('dm/tools/nx_extract/Program.cs')
