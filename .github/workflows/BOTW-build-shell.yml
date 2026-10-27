@@ -39,45 +39,10 @@ jobs:
         ls -la workspace_core/botw_core/
       shell: bash
 
-    - name: Create and Run External Patch Script
+    - name: Run Dedicated Python Patch Script
       run: |
-        python3 -c "
-        import re
-        from pathlib import Path
-
-        path = 'scripts/build_ipa_from_nsp.py'
-        with open(path, 'r', encoding='utf-8') as f:
-            code = f.read()
-
-        target = \"if not fams: raise BuildError(f'no NSP with a readable title ID in {nsp_dir}')\"
-        replacement = \"fams = fams or {0x01007EF00011E000: {'base': Path('workspace_core/botw_core'), 'updates': [], 'dlc': []}}\"
-        code = code.replace(target, replacement)
-
-        bypass_logic = '''
-def decompress_nsz(nsp_dir, app, fam, keys, env):
-    import shutil
-    from pathlib import Path
-    print(\"[BYPASS] Using direct ExeFS from lightweight core package...\")
-    build_dir = Path(nsp_dir) / f\"{app:016X}_build\"
-    extract_dir = build_dir / \"extract\"
-    extract_dir.mkdir(parents=True, exist_ok=True)
-    src_exefs = Path('workspace_core/botw_core/ExeFS')
-    if not src_exefs.exists():
-        src_exefs = Path('workspace_core/botw_core/exefs')
-    if src_exefs.exists():
-        dest_exefs = extract_dir / \"ExeFS\"
-        if dest_exefs.exists():
-            shutil.rmtree(dest_exefs)
-        shutil.copytree(src_exefs, dest_exefs)
-        print(f\"[BYPASS] Copied ExeFS from {src_exefs} to {dest_exefs}\")
-    return fam
-'''
-        code = re.sub(r'def decompress_nsz\\([^)]*\\):.*?(?=\\ndef |\\Z)', bypass_logic, code, flags=re.DOTALL)
-
-        with open(path, 'w', encoding='utf-8') as f:
-            f.write(code)
-        print('[SUCCESS] Successfully patched build script inline!')
-        "
+        # 直接运行我们仓库里自带或刚刚写好的外置纯 Python 脚本，彻底告别 YAML 转义地狱
+        python3 scripts/patch_build.py
       shell: bash
 
     - name: Run Patched Build Script
