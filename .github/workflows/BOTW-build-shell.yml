@@ -47,6 +47,38 @@ jobs:
           fi
           curl --fail --location --retry 3 --silent --show-error "$BOTW_CORE_ZIP_URL" -o botw_core.zip
           test -s botw_core.zip
+          # ZIPs created on Windows may store backslashes in entry names. Normalize
+          # them to POSIX separators before unzip -t/-Z1 and extraction on macOS.
+          python3 - <<'PY'
+          import os
+          import zipfile
+
+          src = "botw_core.zip"
+          tmp = "botw_core.normalized.zip"
+          with zipfile.ZipFile(src, "r") as zin, zipfile.ZipFile(tmp, "w") as zout:
+              seen = set()
+              for info in zin.infolist():
+                  name = info.filename.replace("\\", "/")
+                  parts = name.split("/")
+                  if name.startswith("/") or any(part == ".." for part in parts):
+                      raise SystemExit(f"[ERROR] Unsafe ZIP entry path: {info.filename!r}")
+                  if name in seen:
+                      raise SystemExit(f"[ERROR] Duplicate ZIP entry after path normalization: {name!r}")
+                  seen.add(name)
+                  new_info = zipfile.ZipInfo(name, date_time=info.date_time)
+                  new_info.compress_type = info.compress_type
+                  new_info.comment = info.comment
+                  new_info.extra = info.extra
+                  new_info.internal_attr = info.internal_attr
+                  new_info.external_attr = info.external_attr
+                  new_info.create_system = info.create_system
+                  if not name.endswith("/"):
+                      zout.writestr(new_info, zin.read(info.filename))
+                  else:
+                      zout.writestr(new_info, b"")
+          os.replace(tmp, src)
+          print(f"[OK] Normalized {len(seen)} ZIP paths to forward slashes.")
+          PY
           unzip -t botw_core.zip
           if unzip -Z1 botw_core.zip | grep -Eiq '(^|/)prod\.keys$'; then
             echo "[ERROR] Refusing an input archive containing prod.keys."
