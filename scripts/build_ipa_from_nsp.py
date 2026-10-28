@@ -1527,7 +1527,8 @@ def parse_args(argv):
     ap = argparse.ArgumentParser(prog='build_ipa_from_nsp.py',
         description='Build an unsigned IPA or prepare an Xcode project from a game\'s NSPs; a game with no profile is surveyed and gets a provisional profile.',
         epilog='example: python3 scripts/build_ipa_from_nsp.py ~/nsp/"Super Mario Bros Wonder" -k ~/keys/prod.keys')
-    ap.add_argument('nsp_dir', nargs='?', help='folder holding one game\'s NSPs (default: the NSP_DIR setting, else asked)')
+    ap.add_argument('nsp_dir', nargs='?', help='workspace folder (NSP folder for normal builds; workspace root when --extracted-dir is used)')
+    ap.add_argument('--extracted-dir', help='use already extracted game files directly (folder containing ExeFS/ and RomFS/); skips NSP scanning, decryption, and extraction, so prod.keys is not needed')
     ap.add_argument('-k', '--keys', help='path of prod.keys (default: the PROD_KEYS setting, else asked)')
     ap.add_argument('-p', '--package', help='version packed into the IPA, e.g. v327680 / v0 (default: the newest in the folder)')
     ap.add_argument('-o', '--out', help='output IPA (default: <the profile\'s ipa> in the NSP folder)')
@@ -1586,10 +1587,18 @@ def main(args=None):
     if mac and not keep: say('keeping the extracted game files all the same: the game runs from them on the Mac'); keep = True
     if prepare_xcode and not keep: raise BuildError('--prepare-xcode requires --keep-extracted: Xcode builds from the extracted files')
     if args.xcode_workspace and not prepare_xcode: raise BuildError('--xcode-workspace requires --prepare-xcode')
+    extracted_mode = bool(args.extracted_dir)
     nsp_dir = Path(os.path.expanduser(args.nsp_dir or NSP_DIR or ask('NSP folder: ', 'the NSP folder'))).resolve()
-    keys = Path(os.path.expanduser(args.keys or PROD_KEYS or ask('path of prod.keys: ', 'prod.keys (-k)'))).resolve()
+    extracted_dir = Path(os.path.expanduser(args.extracted_dir)).resolve() if extracted_mode else None
+    keys = None if extracted_mode else Path(os.path.expanduser(args.keys or PROD_KEYS or ask('path of prod.keys: ', 'prod.keys (-k)'))).resolve()
     if not nsp_dir.is_dir(): raise BuildError(f'not a folder: {nsp_dir}')
-    if not keys.is_file(): raise BuildError(f'no such file: {keys}')
+    if extracted_mode:
+        if not extracted_dir.is_dir(): raise BuildError(f'not an extracted game folder: {extracted_dir}')
+        for rel in ('ExeFS/main', 'ExeFS/sdk', 'ExeFS/subsdk0', 'RomFS/Pack/Bootup_Graphics.pack', 'RomFS/System/Version.txt'):
+            if not (extracted_dir / rel).is_file(): raise BuildError(f'--extracted-dir is missing required real game file: {extracted_dir / rel}')
+        if (extracted_dir / 'RomFS/System/Version.txt').read_text(errors='replace').strip() != '1.9.0':
+            raise BuildError('the supplied extracted RomFS is not BOTW 1.9.0 (System/Version.txt must contain 1.9.0)')
+    elif not keys.is_file(): raise BuildError(f'no such file: {keys}')
     sys.path.insert(0, str(repo / 'dm/games')); import game as gamemod   # game profiles
     global pg; import profile_guess as pg   # dm/games: a provisional profile's keys from the game files and from the heap check
     sys.path.insert(0, str(repo / 'dm/tools')); global nacp; import nacp   # the game name in the NSP's control data
@@ -1600,11 +1609,16 @@ def main(args=None):
     env.setdefault('USER', getpass.getuser())   # xcodegen fails without USER (Couldn't find current username)
     env.setdefault('J', str(os.cpu_count() or 8))   # shader_split.py's and dmsh_build.py's workers (their default is 8)
     py = sys.executable
-    app, fam = scan_nsps(nsp_dir)
-    fam = decompress_nsz(nsp_dir, app, fam, keys, env)
+    if extracted_mode:
+        app = 0x01007EF00011E000
+        fam = {'base': None, 'updates': [], 'dlc': []}
+        say(f'using pre-extracted BOTW files: {extracted_dir}; no NSP decryption or prod.keys required')
+    else:
+        app, fam = scan_nsps(nsp_dir)
+        fam = decompress_nsz(nsp_dir, app, fam, keys, env)
     force =args.provisional or PROVISIONAL   # a provisional profile even when dm/games has one (testing the guesses)
     g, provisional, shadowed = None if force else gamemod.by_title(app), False, False
-    alias = None if force or g else same_build(nsp_dir, app, fam, keys, repo, env)   # a known build under another title ID: packed from a profile derived from that build's
+    alias = None if extracted_mode or force or g else same_build(nsp_dir, app, fam, keys, repo, env)   # a known build under another title ID: packed from a profile derived from that build's
     if alias:
         g = alias[0]; say(f'no game profile for {app:016X}, but its main build {alias[2]} is game profile {g.id}\'s {alias[1]} ({g.get("name", "")}) under another title ID')
     if g is None:   # no game profile: survey, then (unless --survey-only) a provisional profile outside the repository and a best-effort IPA
@@ -1627,7 +1641,13 @@ def main(args=None):
         say('[RED] provisional game profile: values guessed from the survey, the game may not boot; bring it up per docs/agents after packing')
     say(f'game profile: {g.id}{" (provisional: " + str(g.dir) + ")" if provisional else ""}')
     builds, need = g.builds(), g.words('shader_versions')
-    have, derived = nsp_versions(fam, builds), False
+    if extracted_mode:
+        pkg_ver = args.package or PACKAGE or g.get('package')
+        if pkg_ver not in builds: raise BuildError(f'--package {pkg_ver!r} is not registered in profile {g.id}: {", ".join(builds)}')
+        have = {pkg_ver: None}
+    else:
+        have = nsp_versions(fam, builds)
+    derived = False
     if provisional:   # the version the survey saw
         pkg_ver = args.package or PACKAGE or g.get('package')
         if pkg_ver not in builds: raise BuildError(f"the version to pack (-p / PACKAGE) must be one the game profile registers: {', '.join(builds)}")
@@ -1665,21 +1685,26 @@ def main(args=None):
     env.update(DM_GAME=g.id, DM_ROOT=str(work), WORK=str(work / 'tmp'))
     logs = work / 'logs'
     check_prereqs(env, xlate, mac)
-    picks = pick_nsps(fam, have, versions)
+    picks = {v: (None, None) for v in versions} if extracted_mode else pick_nsps(fam, have, versions)
 
     ex = work / 'extract'; ex.mkdir(parents=True, exist_ok=True); (work / 'tmp').mkdir(exist_ok=True)
     gb = sum({p.stat().st_size for b, u in picks.values() for p in (b, u) if p}) / 2**30 + 6   # extraction + shader cache + slack
-    if free_gb(work) < gb and not all((ex / v).exists() for v in versions): raise BuildError(f'less than {gb:.0f} GB free on the volume of {work}')
+    if not extracted_mode and free_gb(work) < gb and not all((ex / v).exists() for v in versions): raise BuildError(f'less than {gb:.0f} GB free on the volume of {work}')
     heapck = provisional and HEAP_CHECK and not args.no_heap_check and not heap_checked(g)   # the heap check, when the game needs one (once per provisional profile: it stamps the profile)
     PROG.plan(1 + len(versions) + bool(fam['dlc']) + 4 - (prepare_xcode or mac))   # prepare Xcode (a Mac-only build: the Mac host) replaces app build + IPA pack with one stage
-    PROG.stage('build nx_extract')
-    nx = build_nx_extract(repo, work, logs, env)
-    PROG.end()
     dirs, clone = {}, None
-    for ver in versions:   # the base game is extracted alone first; later updates clone against its RomFS
-        b, u = picks[ver]
-        dirs[ver] = extract(nx, keys, ex, ver, b, u, clone, logs, g)
-        if u is None and clone is None and can_clone(ex): clone = dirs[ver] / 'RomFS'
+    if extracted_mode:
+        if len(versions) != 1: raise BuildError('pre-extracted mode expects exactly one version; use the profile registered version')
+        dirs[versions[0]] = extracted_dir
+        nx = None
+    else:
+        PROG.stage('build nx_extract')
+        nx = build_nx_extract(repo, work, logs, env)
+        PROG.end()
+        for ver in versions:   # the base game is extracted alone first; later updates clone against its RomFS
+            b, u = picks[ver]
+            dirs[ver] = extract(nx, keys, ex, ver, b, u, clone, logs, g)
+            if u is None and clone is None and can_clone(ex): clone = dirs[ver] / 'RomFS'
     bad = [] if derived else [f'{v}: {x}' for v in versions for x in build_mismatch(dirs[v], v, g)]   # every module's build ID must be the one the profile registers for its version
     if bad and provisional: raise BuildError(f'not the builds provisional game profile {g.id} registers: {"; ".join(bad)}')
     if bad:   # files of other builds under a registered version's tag: packed like any other version
