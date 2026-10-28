@@ -1,0 +1,37 @@
+name: Validate BOTW build scripts
+
+on:
+  pull_request:
+    paths:
+      - "scripts/build_ipa_from_nsp.py"
+      - "scripts/preprocess_botw_shaders.py"
+      - "scripts/package_botw_core.ps1"
+      - ".github/workflows/BOTW-build-shell.yml"
+      - ".github/workflows/validate-botw-build-scripts.yml"
+  push:
+    branches:
+      - "fix/botw-ipa-real-assets"
+    paths:
+      - "scripts/build_ipa_from_nsp.py"
+      - "scripts/preprocess_botw_shaders.py"
+      - "scripts/package_botw_core.ps1"
+      - ".github/workflows/BOTW-build-shell.yml"
+      - ".github/workflows/validate-botw-build-scripts.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  python-syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Check Python syntax and CLI help
+        run: |
+          set -euo pipefail
+          python -m py_compile scripts/build_ipa_from_nsp.py scripts/preprocess_botw_shaders.py
+          python scripts/preprocess_botw_shaders.py --help >/dev/null
+          git diff --check
