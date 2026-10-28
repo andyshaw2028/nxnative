@@ -1,78 +1,188 @@
 
-    - name: Build Lightweight Shell IPA
-      shell: bash
-      run: |
-        set -euo pipefail
+name: Build BotW iOS Native Shell
 
-        echo "=== 1. Verify lightweight core ==="
-        test -d workspace_core/botw_core || {
-          echo "[ERROR] Lightweight core directory missing"
-          exit 1
-        }
+on:
+  workflow_dispatch:
 
-        echo "=== 2. Build IPA ==="
-        python3 scripts/build_ipa_from_nsp.py \
-          --app-name "The Legend of Zelda: Breath of the Wild" \
-          --out workspace_core/ZeldaBreathOfTheWild.ipa \
-          -k prod.keys \
-          workspace_core/
+permissions:
+  contents: read
 
-        echo "=== 3. Verify generated IPA ==="
-        IPA="workspace_core/ZeldaBreathOfTheWild.ipa"
-        test -s "$IPA" || {
-          echo "[ERROR] IPA missing or empty"
-          exit 1
-        }
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 360
 
-        unzip -t "$IPA"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-        echo "=== 4. Verify app bundle and executable ==="
-        rm -rf ipa_verify
-        mkdir -p ipa_verify
-        unzip -q "$IPA" -d ipa_verify
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
 
-        APP_PATH="ipa_verify/Payload/DmIOS.app"
-        if [ ! -d "$APP_PATH" ]; then
-          APP_PATH="$(find ipa_verify/Payload -maxdepth 2 \
-            -type d -name '*.app' -print -quit)"
-        fi
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
 
-        test -n "$APP_PATH" && test -d "$APP_PATH" || {
-          echo "[ERROR] No app bundle found inside IPA"
-          exit 1
-        }
+      - name: Install macOS build and Python dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
 
-        /usr/libexec/PlistBuddy \
-          -c 'Print :CFBundleExecutable' \
-          "$APP_PATH/Info.plist"
+          brew install xcodegen zstd spirv-cross glslang
 
-        EXEC_NAME=$(/usr/libexec/PlistBuddy \
-          -c 'Print :CFBundleExecutable' \
-          "$APP_PATH/Info.plist")
+          python3 -m pip install --upgrade pip
+          python3 -m pip install lz4 capstone fonttools backports.zstd
 
-        test -s "$APP_PATH/$EXEC_NAME" || {
-          echo "[ERROR] App executable missing: $EXEC_NAME"
-          exit 1
-        }
+          if [ -f requirements.txt ]; then
+            python3 -m pip install -r requirements.txt
+          fi
 
-        echo "=== 5. Inspect memory entitlement ==="
-        codesign -d --entitlements :- \
-          "$APP_PATH/$EXEC_NAME" \
-          > ipa_verify/entitlements.plist 2>&1 || true
+          if [ -f scripts/requirements.txt ]; then
+            python3 -m pip install -r scripts/requirements.txt
+          fi
 
-        if grep -q 'com.apple.developer.kernel.increased-memory-limit' \
-          ipa_verify/entitlements.plist; then
-          echo "[OK] Increased Memory Limit entitlement found"
-        else
-          echo "[WARN] Entitlement not confirmed in extracted IPA"
-          cat ipa_verify/entitlements.plist
-        fi
+      - name: Download and prepare lightweight core
+        shell: bash
+        run: |
+          set -euo pipefail
 
-        echo "=== IPA ready ==="
-        ls -lh "$IPA"
+          echo "Downloading lightweight core package..."
 
-    - name: Upload Built IPA Artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: BotW-iOS-IPA
-        path: workspace_core/ZeldaBreathOfTheWild.ipa
+          if ! curl -fL --retry 3 \
+            -o botw_core.zip \
+            "https://github.com/user-attachments/files/34022482/botw_core.zip"; then
+            curl -fL --retry 3 \
+              -o botw_core.zip \
+              "https://github.2aik.dev/https://github.com/user-attachments/files/34022482/botw_core.zip"
+          fi
+
+          test -s botw_core.zip
+          unzip -t botw_core.zip
+          mkdir -p workspace_core
+          unzip -q botw_core.zip -d workspace_core/
+
+          test -f workspace_core/botw_core/prod.keys || {
+            echo "[ERROR] prod.keys missing from lightweight core package"
+            exit 1
+          }
+
+          cp workspace_core/botw_core/prod.keys ./prod.keys
+
+          mkdir -p workspace_core/botw_core/extract/v0/RomFS/Pack
+          mkdir -p workspace_core/botw_core/RomFS/Pack
+          mkdir -p workspace_core/01007EF00011E000_build/ipa/data/v0
+
+          dd if=/dev/zero \
+            of=workspace_core/botw_core/extract/v0/RomFS/Pack/Bootup_Graphics.pack \
+            bs=1024 count=1
+
+          dd if=/dev/zero \
+            of=workspace_core/botw_core/RomFS/Pack/Bootup_Graphics.pack \
+            bs=1024 count=1
+
+          dd if=/dev/zero \
+            of=workspace_core/botw_core/extract/v0/control.nacp \
+            bs=1024 count=16
+
+          dd if=/dev/zero \
+            of=workspace_core/botw_core/control.nacp \
+            bs=1024 count=16
+
+          dd if=/dev/zero \
+            of=workspace_core/01007EF00011E000_build/ipa/data/v0/control.nacp \
+            bs=1024 count=16
+
+      - name: Run dedicated patch script
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/patch_build.py
+
+      - name: Build lightweight shell IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          IPA="workspace_core/ZeldaBreathOfTheWild.ipa"
+
+          echo "=== Building IPA ==="
+
+          python3 scripts/build_ipa_from_nsp.py \
+            --app-name "The Legend of Zelda: Breath of the Wild" \
+            --out "$IPA" \
+            -k prod.keys \
+            workspace_core/
+
+          echo "=== Checking generated IPA ==="
+
+          test -s "$IPA" || {
+            echo "[ERROR] Build did not produce the expected IPA: $IPA"
+            find workspace_core -maxdepth 5 -type f \
+              \( -name '*.ipa' -o -name '*.log' \) -print
+            exit 1
+          }
+
+          unzip -t "$IPA"
+
+          echo "=== Checking app executable ==="
+
+          VERIFY_DIR="ipa_verify"
+          rm -rf "$VERIFY_DIR"
+          mkdir -p "$VERIFY_DIR"
+          unzip -q "$IPA" -d "$VERIFY_DIR"
+
+          APP_EXECUTABLE="$(find "$VERIFY_DIR/Payload" \
+            -type f -name 'DmIOS' -print -quit)"
+
+          test -n "$APP_EXECUTABLE" || {
+            echo "[ERROR] DmIOS executable not found inside IPA"
+            find "$VERIFY_DIR/Payload" -maxdepth 4 -print
+            exit 1
+          }
+
+          APP_PATH="${APP_EXECUTABLE%/DmIOS}"
+
+          test -f "$APP_PATH/Info.plist" || {
+            echo "[ERROR] App Info.plist missing: $APP_PATH"
+            exit 1
+          }
+
+          echo "App path: $APP_PATH"
+
+          /usr/libexec/PlistBuddy \
+            -c 'Print :CFBundleIdentifier' \
+            "$APP_PATH/Info.plist"
+
+          /usr/libexec/PlistBuddy \
+            -c 'Print :CFBundleExecutable' \
+            "$APP_PATH/Info.plist"
+
+          echo "=== Inspecting memory entitlement ==="
+
+          if codesign -d --entitlements :- "$APP_EXECUTABLE" \
+            > entitlement-check.plist 2>&1; then
+            if grep -q \
+              'com.apple.developer.kernel.increased-memory-limit' \
+              entitlement-check.plist; then
+              echo "[OK] Increased Memory Limit entitlement found"
+            else
+              echo "[WARN] Entitlement was not confirmed"
+              cat entitlement-check.plist
+            fi
+          else
+            echo "[WARN] Could not inspect executable entitlements"
+            cat entitlement-check.plist
+          fi
+
+          echo "=== IPA validation complete ==="
+          ls -lh "$IPA"
+
+      - name: Upload built IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: BotW-iOS-IPA
+          if-no-files-found: error
+          path: workspace_core/ZeldaBreathOfTheWild.ipa
