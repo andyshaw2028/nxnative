@@ -38,7 +38,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cp "$GITHUB_WORKSPACE/NG3_CORE.zip" ng3_core.zip
+          if [ "$GITHUB_WORKSPACE/NG3_CORE.zip" != "$PWD/ng3_core.zip" ]; then cp "$GITHUB_WORKSPACE/NG3_CORE.zip" ng3_core.zip; fi
           test -s ng3_core.zip
           python3 - <<'PY'
           import os, zipfile
@@ -79,7 +79,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cp "$GITHUB_WORKSPACE/NG3_SHADERS.zip" ng3_shader_prebuilt.zip
+          if [ "$GITHUB_WORKSPACE/NG3_SHADERS.zip" != "$PWD/ng3_shader_prebuilt.zip" ]; then cp "$GITHUB_WORKSPACE/NG3_SHADERS.zip" ng3_shader_prebuilt.zip; fi
           test -s ng3_shader_prebuilt.zip
           unzip -t ng3_shader_prebuilt.zip
           if unzip -Z1 ng3_shader_prebuilt.zip | grep -Eiq '(^|/)prod\.keys$'; then exit 1; fi
