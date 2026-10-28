@@ -1,4 +1,3 @@
-
 name: Build BotW iOS Native Shell
 
 on:
@@ -30,72 +29,52 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           brew install xcodegen zstd spirv-cross glslang
-
           python3 -m pip install --upgrade pip
           python3 -m pip install lz4 capstone fonttools backports.zstd
+          if [ -f requirements.txt ]; then python3 -m pip install -r requirements.txt; fi
+          if [ -f scripts/requirements.txt ]; then python3 -m pip install -r scripts/requirements.txt; fi
 
-          if [ -f requirements.txt ]; then
-            python3 -m pip install -r requirements.txt
-          fi
-
-          if [ -f scripts/requirements.txt ]; then
-            python3 -m pip install -r scripts/requirements.txt
-          fi
-
-      - name: Download and prepare lightweight core
+      - name: Download private, key-free BOTW build inputs
         shell: bash
+        env:
+          BOTW_CORE_ZIP_URL: ${{ secrets.BOTW_CORE_ZIP_URL }}
         run: |
           set -euo pipefail
-
-          echo "Downloading lightweight core package..."
-
-          if ! curl -fL --retry 3 \
-            -o botw_core.zip \
-            "https://github.com/user-attachments/files/34022482/botw_core.zip"; then
-            curl -fL --retry 3 \
-              -o botw_core.zip \
-              "https://github.2aik.dev/https://github.com/user-attachments/files/34022482/botw_core.zip"
+          if [ -z "${BOTW_CORE_ZIP_URL:-}" ]; then
+            echo "[ERROR] Configure the BOTW_CORE_ZIP_URL Actions secret to a private download URL for a key-free botw_core.zip."
+            echo "The ZIP must contain botw_core/ExeFS/* and the real botw_core/RomFS/Pack/Bootup_Graphics.pack."
+            exit 1
           fi
-
+          curl --fail --location --retry 3 --silent --show-error "$BOTW_CORE_ZIP_URL" -o botw_core.zip
           test -s botw_core.zip
           unzip -t botw_core.zip
+          if unzip -Z1 botw_core.zip | grep -Eiq '(^|/)prod\.keys$'; then
+            echo "[ERROR] Refusing to download or use a package containing prod.keys."
+            exit 1
+          fi
           mkdir -p workspace_core
           unzip -q botw_core.zip -d workspace_core/
-
-          test -f workspace_core/botw_core/prod.keys || {
-            echo "[ERROR] prod.keys missing from lightweight core package"
+          test -f workspace_core/botw_core/ExeFS/main
+          test -f workspace_core/botw_core/ExeFS/sdk
+          test -f workspace_core/botw_core/ExeFS/subsdk0
+          PACK="workspace_core/botw_core/RomFS/Pack/Bootup_Graphics.pack"
+          test -s "$PACK" || { echo "[ERROR] Real Bootup_Graphics.pack is missing."; exit 1; }
+          PACK_SIZE=$(stat -f%z "$PACK")
+          if [ "$PACK_SIZE" -lt 1048576 ]; then
+            echo "[ERROR] Bootup_Graphics.pack is only $PACK_SIZE bytes; refusing a placeholder or truncated file."
             exit 1
-          }
+          fi
+          echo "Real Bootup_Graphics.pack size: $PACK_SIZE bytes"
+          mkdir -p workspace_core/botw_core/extract/v0/RomFS/Pack workspace_core/01007EF00011E000_build/ipa/data/v0
+          # This shell-only workflow does not decrypt NSPs, so the keys file is intentionally empty.
+          # Never distribute prod.keys inside a public repository or build-input ZIP.
+          : > prod.keys
+          dd if=/dev/zero of=workspace_core/botw_core/control.nacp bs=1024 count=16
+          dd if=/dev/zero of=workspace_core/botw_core/extract/v0/control.nacp bs=1024 count=16
+          dd if=/dev/zero of=workspace_core/01007EF00011E000_build/ipa/data/v0/control.nacp bs=1024 count=16
 
-          cp workspace_core/botw_core/prod.keys ./prod.keys
-
-          mkdir -p workspace_core/botw_core/extract/v0/RomFS/Pack
-          mkdir -p workspace_core/botw_core/RomFS/Pack
-          mkdir -p workspace_core/01007EF00011E000_build/ipa/data/v0
-
-          dd if=/dev/zero \
-            of=workspace_core/botw_core/extract/v0/RomFS/Pack/Bootup_Graphics.pack \
-            bs=1024 count=1
-
-          dd if=/dev/zero \
-            of=workspace_core/botw_core/RomFS/Pack/Bootup_Graphics.pack \
-            bs=1024 count=1
-
-          dd if=/dev/zero \
-            of=workspace_core/botw_core/extract/v0/control.nacp \
-            bs=1024 count=16
-
-          dd if=/dev/zero \
-            of=workspace_core/botw_core/control.nacp \
-            bs=1024 count=16
-
-          dd if=/dev/zero \
-            of=workspace_core/01007EF00011E000_build/ipa/data/v0/control.nacp \
-            bs=1024 count=16
-
-      - name: Run dedicated patch script
+      - name: Run dedicated build preparation
         shell: bash
         run: |
           set -euo pipefail
@@ -105,78 +84,36 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
-          IPA="workspace_core/ZeldaBreathOfTheWild.ipa"
-
-          echo "=== Building IPA ==="
-
+          # build_ipa.sh changes its working directory to dm/ios, so pass an absolute output path.
+          IPA="$GITHUB_WORKSPACE/workspace_core/ZeldaBreathOfTheWild.ipa"
+          echo "=== Building IPA at $IPA ==="
           python3 scripts/build_ipa_from_nsp.py \
             --app-name "The Legend of Zelda: Breath of the Wild" \
             --out "$IPA" \
             -k prod.keys \
             workspace_core/
-
           echo "=== Checking generated IPA ==="
-
           test -s "$IPA" || {
             echo "[ERROR] Build did not produce the expected IPA: $IPA"
-            find workspace_core -maxdepth 5 -type f \
-              \( -name '*.ipa' -o -name '*.log' \) -print
+            find "$GITHUB_WORKSPACE" -maxdepth 7 -type f \( -name '*.ipa' -o -name 'build_ipa.log' \) -print
             exit 1
           }
-
           unzip -t "$IPA"
-
-          echo "=== Checking app executable ==="
-
-          VERIFY_DIR="ipa_verify"
+          VERIFY_DIR="$GITHUB_WORKSPACE/ipa_verify"
           rm -rf "$VERIFY_DIR"
           mkdir -p "$VERIFY_DIR"
           unzip -q "$IPA" -d "$VERIFY_DIR"
-
-          APP_EXECUTABLE="$(find "$VERIFY_DIR/Payload" \
-            -type f -name 'DmIOS' -print -quit)"
-
+          APP_EXECUTABLE="$(find "$VERIFY_DIR/Payload" -type f -name 'DmIOS' -print -quit)"
           test -n "$APP_EXECUTABLE" || {
             echo "[ERROR] DmIOS executable not found inside IPA"
             find "$VERIFY_DIR/Payload" -maxdepth 4 -print
             exit 1
           }
-
           APP_PATH="${APP_EXECUTABLE%/DmIOS}"
-
-          test -f "$APP_PATH/Info.plist" || {
-            echo "[ERROR] App Info.plist missing: $APP_PATH"
-            exit 1
-          }
-
+          test -f "$APP_PATH/Info.plist" || { echo "[ERROR] App Info.plist missing: $APP_PATH"; exit 1; }
           echo "App path: $APP_PATH"
-
-          /usr/libexec/PlistBuddy \
-            -c 'Print :CFBundleIdentifier' \
-            "$APP_PATH/Info.plist"
-
-          /usr/libexec/PlistBuddy \
-            -c 'Print :CFBundleExecutable' \
-            "$APP_PATH/Info.plist"
-
-          echo "=== Inspecting memory entitlement ==="
-
-          if codesign -d --entitlements :- "$APP_EXECUTABLE" \
-            > entitlement-check.plist 2>&1; then
-            if grep -q \
-              'com.apple.developer.kernel.increased-memory-limit' \
-              entitlement-check.plist; then
-              echo "[OK] Increased Memory Limit entitlement found"
-            else
-              echo "[WARN] Entitlement was not confirmed"
-              cat entitlement-check.plist
-            fi
-          else
-            echo "[WARN] Could not inspect executable entitlements"
-            cat entitlement-check.plist
-          fi
-
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_PATH/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP_PATH/Info.plist"
           echo "=== IPA validation complete ==="
           ls -lh "$IPA"
 
