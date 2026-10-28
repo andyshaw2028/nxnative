@@ -63,7 +63,8 @@ jobs:
           if unzip -Z1 ng3_core.zip | grep -Eiq '(^|/)prod\.keys$'; then exit 1; fi
           mkdir -p workspace_core
           unzip -q ng3_core.zip -d workspace_core
-          CORE="$GITHUB_WORKSPACE/workspace_core/ng3_core"
+          # NG3_CORE.zip is created from the contents of ng3_core/, so ExeFS/ is at ZIP root.
+          CORE="$GITHUB_WORKSPACE/workspace_core"
           for f in main main.npdm rtld sdk subsdk0; do test -s "$CORE/ExeFS/$f" || { echo "Missing ExeFS/$f"; exit 1; }; done
           test -s "$CORE/control.nacp"
           test -s "$CORE/icon.jpg"
@@ -108,7 +109,7 @@ jobs:
           set -euo pipefail
           IPA="$GITHUB_WORKSPACE/workspace_core/NinjaGaiden3RazorsEdge.ipa"
           python3 scripts/build_ipa_from_nsp.py "$GITHUB_WORKSPACE/workspace_core" \
-            --extracted-dir "$GITHUB_WORKSPACE/workspace_core/ng3_core" \
+            --extracted-dir "$GITHUB_WORKSPACE/workspace_core" \
             --prebuilt-shader-dir "$GITHUB_WORKSPACE/shader_prebuilt" \
             --app-name "NINJA GAIDEN 3: Razor's Edge" \
             --package v0 \
