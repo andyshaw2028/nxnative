@@ -35,86 +35,74 @@ jobs:
           if [ -f requirements.txt ]; then python3 -m pip install -r requirements.txt; fi
           if [ -f scripts/requirements.txt ]; then python3 -m pip install -r scripts/requirements.txt; fi
 
-      - name: Download private, key-free BOTW build inputs
+      - name: Download and validate full pre-extracted BOTW 1.9.0 assets
         shell: bash
         env:
           BOTW_CORE_ZIP_URL: ${{ secrets.BOTW_CORE_ZIP_URL }}
         run: |
           set -euo pipefail
           if [ -z "${BOTW_CORE_ZIP_URL:-}" ]; then
-            echo "[ERROR] Configure the BOTW_CORE_ZIP_URL Actions secret to a private download URL for a key-free botw_core.zip."
-            echo "The ZIP must contain botw_core/ExeFS/* and the real botw_core/RomFS/Pack/Bootup_Graphics.pack."
+            echo "[ERROR] Configure BOTW_CORE_ZIP_URL to a private download URL for the full, key-free extracted BOTW 1.9.0 assets."
+            echo "Required ZIP layout: botw_core/ExeFS/* and botw_core/RomFS/**/* (complete RomFS, not only Bootup_Graphics.pack)."
             exit 1
           fi
           curl --fail --location --retry 3 --silent --show-error "$BOTW_CORE_ZIP_URL" -o botw_core.zip
           test -s botw_core.zip
           unzip -t botw_core.zip
           if unzip -Z1 botw_core.zip | grep -Eiq '(^|/)prod\.keys$'; then
-            echo "[ERROR] Refusing to download or use a package containing prod.keys."
+            echo "[ERROR] Refusing an input archive containing prod.keys."
             exit 1
           fi
           mkdir -p workspace_core
           unzip -q botw_core.zip -d workspace_core/
-          test -f workspace_core/botw_core/ExeFS/main
-          test -f workspace_core/botw_core/ExeFS/sdk
-          test -f workspace_core/botw_core/ExeFS/subsdk0
-          PACK="workspace_core/botw_core/RomFS/Pack/Bootup_Graphics.pack"
-          test -s "$PACK" || { echo "[ERROR] Real Bootup_Graphics.pack is missing."; exit 1; }
-          PACK_SIZE=$(stat -f%z "$PACK")
-          if [ "$PACK_SIZE" -lt 1048576 ]; then
-            echo "[ERROR] Bootup_Graphics.pack is only $PACK_SIZE bytes; refusing a placeholder or truncated file."
+          CORE="$GITHUB_WORKSPACE/workspace_core/botw_core"
+          for f in main main.npdm rtld sdk subsdk0; do
+            test -s "$CORE/ExeFS/$f" || { echo "[ERROR] Missing ExeFS/$f"; exit 1; }
+          done
+          test -s "$CORE/RomFS/Pack/Bootup_Graphics.pack"
+          test "$(cat "$CORE/RomFS/System/Version.txt")" = "1.9.0"
+          PACK_SIZE=$(stat -f%z "$CORE/RomFS/Pack/Bootup_Graphics.pack")
+          ROMFS_FILES=$(find "$CORE/RomFS" -type f | wc -l | tr -d ' ')
+          ROMFS_KB=$(du -sk "$CORE/RomFS" | awk '{print $1}')
+          echo "Bootup_Graphics.pack: $PACK_SIZE bytes"
+          echo "RomFS files: $ROMFS_FILES; size: $ROMFS_KB KiB"
+          if [ "$PACK_SIZE" -lt 1048576 ] || [ "$ROMFS_FILES" -lt 40000 ] || [ "$ROMFS_KB" -lt 13000000 ]; then
+            echo "[ERROR] Input is not a complete BOTW RomFS; refusing a partial shell build."
             exit 1
           fi
-          echo "Real Bootup_Graphics.pack size: $PACK_SIZE bytes"
-          mkdir -p workspace_core/botw_core/extract/v0/RomFS/Pack workspace_core/01007EF00011E000_build/ipa/data/v0
-          # This shell-only workflow does not decrypt NSPs, so the keys file is intentionally empty.
-          # Never distribute prod.keys inside a public repository or build-input ZIP.
-          : > prod.keys
-          dd if=/dev/zero of=workspace_core/botw_core/control.nacp bs=1024 count=16
-          dd if=/dev/zero of=workspace_core/botw_core/extract/v0/control.nacp bs=1024 count=16
-          dd if=/dev/zero of=workspace_core/01007EF00011E000_build/ipa/data/v0/control.nacp bs=1024 count=16
+          echo "[OK] Real BOTW 1.9.0 ExeFS and full RomFS validated."
 
-      - name: Run dedicated build preparation
+      - name: Build IPA from already extracted files (no keys, no NSP path)
         shell: bash
+        env:
+          DM_OMIT_ROMFS: "1"
         run: |
           set -euo pipefail
-          python3 scripts/patch_build.py
-
-      - name: Build lightweight shell IPA
-        shell: bash
-        run: |
-          set -euo pipefail
-          # build_ipa.sh changes its working directory to dm/ios, so pass an absolute output path.
           IPA="$GITHUB_WORKSPACE/workspace_core/ZeldaBreathOfTheWild.ipa"
-          echo "=== Building IPA at $IPA ==="
           python3 scripts/build_ipa_from_nsp.py \
+            --extracted-dir "$GITHUB_WORKSPACE/workspace_core/botw_core" \
             --app-name "The Legend of Zelda: Breath of the Wild" \
+            --package v1114112 \
+            --language zh-Hans \
             --out "$IPA" \
-            -k prod.keys \
-            workspace_core/
-          echo "=== Checking generated IPA ==="
-          test -s "$IPA" || {
-            echo "[ERROR] Build did not produce the expected IPA: $IPA"
-            find "$GITHUB_WORKSPACE" -maxdepth 7 -type f \( -name '*.ipa' -o -name 'build_ipa.log' \) -print
-            exit 1
-          }
+            "$GITHUB_WORKSPACE/workspace_core"
+          test -s "$IPA" || { echo "[ERROR] IPA was not created at $IPA"; exit 1; }
           unzip -t "$IPA"
+          if unzip -Z1 "$IPA" | grep -Eiq '(^|/)prod\.keys$'; then
+            echo "[ERROR] Refusing an IPA containing prod.keys."
+            exit 1
+          fi
           VERIFY_DIR="$GITHUB_WORKSPACE/ipa_verify"
           rm -rf "$VERIFY_DIR"
           mkdir -p "$VERIFY_DIR"
           unzip -q "$IPA" -d "$VERIFY_DIR"
           APP_EXECUTABLE="$(find "$VERIFY_DIR/Payload" -type f -name 'DmIOS' -print -quit)"
-          test -n "$APP_EXECUTABLE" || {
-            echo "[ERROR] DmIOS executable not found inside IPA"
-            find "$VERIFY_DIR/Payload" -maxdepth 4 -print
-            exit 1
-          }
+          test -n "$APP_EXECUTABLE" || { echo "[ERROR] DmIOS executable missing from IPA"; exit 1; }
           APP_PATH="${APP_EXECUTABLE%/DmIOS}"
-          test -f "$APP_PATH/Info.plist" || { echo "[ERROR] App Info.plist missing: $APP_PATH"; exit 1; }
-          echo "App path: $APP_PATH"
+          test -f "$APP_PATH/Info.plist" || { echo "[ERROR] Info.plist missing"; exit 1; }
           /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_PATH/Info.plist"
           /usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP_PATH/Info.plist"
-          echo "=== IPA validation complete ==="
+          echo "[OK] IPA structure validated (this does not by itself prove the game boots)."
           ls -lh "$IPA"
 
       - name: Upload built IPA
