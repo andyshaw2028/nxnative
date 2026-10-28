@@ -132,7 +132,11 @@ APP=$DD/Build/Products/Release-iphoneos/DmIOS.app
 rm -rf "$APP/msl" "$O/Payload" "$O/out.ipa"   # (the last two: what the copy-and-zip packing left behind)
 P=Payload/DmIOS.app; MAPS=("$P=$APP" "$P/msl/$MSLDIR=$MSL_IOS/$MSLDIR")
 if [ -n "$AOC" ] && [ -d "$AOC" ]; then MAPS+=("$P/aoc=$AOC"); t "add-on content: $(ls "$AOC" | tr '\n' ' ')"; fi
-MAPS+=("$P/romfs=$ROMFS")
+if [ "${DM_OMIT_ROMFS:-0}" = 1 ]; then
+  t "omitting RomFS from IPA (DM_OMIT_ROMFS=1); copy the complete RomFS to Documents/romfs on the device"
+else
+  MAPS+=("$P/romfs=$ROMFS")
+fi
 t "pack IPA (already-compressed game files stored, everything else deflated)"
 python3 tools/pack_ipa.py "$OUT_IPA" --store "$(gp zip_store)" --skip $P/_CodeSignature --skip $P/embedded.mobileprovision --skip $P/msl --skip $P/aoc --skip $P/romfs "${MAPS[@]}" || die "pack_ipa"
 t "done: $OUT_IPA ($(du -h "$OUT_IPA" | cut -f1))"
