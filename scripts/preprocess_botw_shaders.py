@@ -25,7 +25,7 @@ def main() -> int:
     ap.add_argument("main", help="extracted ExeFS/main NSO file")
     ap.add_argument("work_dir", help="directory for generated pkg/ and tables/")
     ap.add_argument("zip_out", help="output ZIP path for the prebuilt shader bundle")
-    ap.add_argument("--jobs", type=int, default=max(2, os.cpu_count() or 4), help="parallel shader scan workers")
+    ap.add_argument("--jobs", type=int, default=min(8, max(2, os.cpu_count() or 4)), help="parallel shader scan workers")
     a = ap.parse_args()
 
     here = Path(__file__).resolve()
