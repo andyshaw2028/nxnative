@@ -59,15 +59,36 @@ jobs:
         python3 scripts/build_ipa_from_nsp.py --app-name "The Legend of Zelda: Breath of the Wild" -k prod.keys workspace_core/ || true
       shell: bash
 
-    - name: Manual Pack App to IPA (Fallback)
+    - name: Manual Pack App to IPA with Memory Limit Entitlements
       run: |
         echo "Searching for compiled .app bundles..."
         find . -name "*.app" -ls
         
         # 寻找编译出来的 .app 目录
-        APP_PATH=$(find . -name "*.app" | head -n 1)
+        APP_PATH=$(find . -name "*.app" | head -n 10 | grep -v "Carthage" | head -n 1)
+        
         if [ -n "$APP_PATH" ]; then
           echo "Found app bundle at: $APP_PATH"
+          
+          # 【核心新增】：在云端实时生成允许突破系统内存限制的权限声明文件
+          echo "Creating entitlements.plist for increased memory limit..."
+          cat <<EOF > entitlements.plist
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>com.apple.developer.kernel.increased-memory-limit</key>
+    <true/>
+    <key>get-task-allow</key>
+    <true/>
+</dict>
+</plist>
+EOF
+
+          # 【核心新增】：使用 codesign 将高内存特权强行注入到编译好的 .app 中
+          echo "Injecting memory limit entitlements via codesign..."
+          codesign --force --sign - --entitlements entitlements.plist "$APP_PATH" || echo "Warning: ad-hoc sign fallback used"
+
           mkdir -p Payload
           cp -r "$APP_PATH" Payload/
           
