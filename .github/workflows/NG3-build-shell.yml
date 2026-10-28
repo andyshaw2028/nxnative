@@ -38,11 +38,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ "$GITHUB_WORKSPACE/NG3_CORE.zip" != "$PWD/ng3_core.zip" ]; then cp "$GITHUB_WORKSPACE/NG3_CORE.zip" ng3_core.zip; fi
-          test -s ng3_core.zip
+          CORE_ZIP="$GITHUB_WORKSPACE/NG3_CORE.zip"
+          test -s "$CORE_ZIP"
+          export CORE_ZIP
           python3 - <<'PY'
           import os, zipfile
-          src, tmp = "ng3_core.zip", "ng3_core.normalized.zip"
+          src = os.environ["CORE_ZIP"]
+          tmp = src + ".normalized.zip"
           with zipfile.ZipFile(src) as zin, zipfile.ZipFile(tmp, "w") as zout:
               seen = set()
               for info in zin.infolist():
@@ -56,10 +58,10 @@ jobs:
                   zout.writestr(ni, b"" if name.endswith("/") else zin.read(info.filename))
           os.replace(tmp, src)
           PY
-          unzip -t ng3_core.zip
-          if unzip -Z1 ng3_core.zip | grep -Eiq '(^|/)prod\.keys$'; then exit 1; fi
+          unzip -t "$CORE_ZIP"
+          if unzip -Z1 "$CORE_ZIP" | grep -Eiq '(^|/)prod\.keys$'; then exit 1; fi
           mkdir -p workspace_core
-          unzip -q ng3_core.zip -d workspace_core
+          unzip -q "$CORE_ZIP" -d workspace_core
           # NG3_CORE.zip is created from the contents of ng3_core/, so ExeFS/ is at ZIP root.
           CORE="$GITHUB_WORKSPACE/workspace_core"
           for f in main main.npdm rtld sdk subsdk0; do test -s "$CORE/ExeFS/$f" || { echo "Missing ExeFS/$f"; exit 1; }; done
@@ -79,12 +81,57 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ "$GITHUB_WORKSPACE/NG3_SHADERS.zip" != "$PWD/ng3_shader_prebuilt.zip" ]; then cp "$GITHUB_WORKSPACE/NG3_SHADERS.zip" ng3_shader_prebuilt.zip; fi
-          test -s ng3_shader_prebuilt.zip
-          unzip -t ng3_shader_prebuilt.zip
-          if unzip -Z1 ng3_shader_prebuilt.zip | grep -Eiq '(^|/)prod\.keys$'; then exit 1; fi
+          SHADER_ZIP="$GITHUB_WORKSPACE/NG3_SHADERS.zip"
+          test -s "$SHADER_ZIP"
+          unzip -t "$SHADER_ZIP"
+          if unzip -Z1 "$SHADER_ZIP" | grep -Eiq '(^|/)prod\.keys
+          test -n "$(find shader_prebuilt/pkg -maxdepth 1 -type f -name '*.bin' -print -quit)" || { echo "No pkg/*.bin files"; exit 1; }
+          for f in shader_map.tsv shader_facts.tsv shader_pairs.tsv; do test -s "shader_prebuilt/tables/$f" || { echo "Missing shader table $f"; exit 1; }; done
+          ROWS=$(grep -vcE '^(#|package[[:space:]])' shader_prebuilt/tables/shader_map.tsv || true)
+          test "$ROWS" -gt 0 || { echo "shader_map.tsv has no records"; exit 1; }
+          echo "[OK] NG3 shader bundle contains $ROWS shader-map rows."
+
+      - name: Adapt extracted-dir checks for NG3
+        run: python3 scripts/prepare_ng3_build.py
+
+      - name: Build unsigned NG3 IPA
+        shell: bash
+        env:
+          DM_OMIT_ROMFS: "1"
+          DM_APP_VERSION: "1.0.1"
+        run: |
+          set -euo pipefail
+          IPA="$GITHUB_WORKSPACE/workspace_core/NinjaGaiden3RazorsEdge.ipa"
+          python3 scripts/build_ipa_from_nsp.py "$GITHUB_WORKSPACE/workspace_core" \
+            --extracted-dir "$GITHUB_WORKSPACE/workspace_core" \
+            --prebuilt-shader-dir "$GITHUB_WORKSPACE/shader_prebuilt" \
+            --app-name "NINJA GAIDEN 3: Razor's Edge" \
+            --package v0 \
+            --out "$IPA"
+          test -s "$IPA"
+          unzip -t "$IPA"
+          if unzip -Z1 "$IPA" | grep -Eiq '(^|/)prod\.keys$'; then echo "Unexpected prod.keys in IPA"; exit 1; fi
+          VERIFY="$GITHUB_WORKSPACE/ipa_verify"
+          mkdir -p "$VERIFY"
+          unzip -q "$IPA" -d "$VERIFY"
+          EXE="$(find "$VERIFY/Payload" -type f -name DmIOS -print -quit)"
+          test -n "$EXE" || { echo "DmIOS missing"; exit 1; }
+          APP="${EXE%/DmIOS}"
+          test -f "$APP/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Info.plist"
+          echo "[OK] IPA structure validated; runtime boot is not yet proven."
+          ls -lh "$IPA"
+
+      - name: Upload NG3 IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: NinjaGaiden3-iOS-IPA
+          if-no-files-found: error
+          path: workspace_core/NinjaGaiden3RazorsEdge.ipa
+; then exit 1; fi
           mkdir -p shader_prebuilt
-          unzip -q ng3_shader_prebuilt.zip -d shader_prebuilt
+          unzip -q "$SHADER_ZIP" -d shader_prebuilt
           test -n "$(find shader_prebuilt/pkg -maxdepth 1 -type f -name '*.bin' -print -quit)" || { echo "No pkg/*.bin files"; exit 1; }
           for f in shader_map.tsv shader_facts.tsv shader_pairs.tsv; do test -s "shader_prebuilt/tables/$f" || { echo "Missing shader table $f"; exit 1; }; done
           ROWS=$(grep -vcE '^(#|package[[:space:]])' shader_prebuilt/tables/shader_map.tsv || true)
