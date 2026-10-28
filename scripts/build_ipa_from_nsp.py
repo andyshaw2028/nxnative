@@ -1529,6 +1529,7 @@ def parse_args(argv):
         epilog='example: python3 scripts/build_ipa_from_nsp.py ~/nsp/"Super Mario Bros Wonder" -k ~/keys/prod.keys')
     ap.add_argument('nsp_dir', nargs='?', help='workspace folder (NSP folder for normal builds; workspace root when --extracted-dir is used)')
     ap.add_argument('--extracted-dir', help='use already extracted game files directly (folder containing ExeFS/ and RomFS/); skips NSP scanning, decryption, and extraction, so prod.keys is not needed')
+    ap.add_argument('--prebuilt-shader-dir', help='use a Windows-preprocessed shader bundle containing pkg/ and tables/{shader_map,shader_facts,shader_pairs}.tsv; requires --extracted-dir and skips the full-RomFS shader scan')
     ap.add_argument('-k', '--keys', help='path of prod.keys (default: the PROD_KEYS setting, else asked)')
     ap.add_argument('-p', '--package', help='version packed into the IPA, e.g. v327680 / v0 (default: the newest in the folder)')
     ap.add_argument('-o', '--out', help='output IPA (default: <the profile\'s ipa> in the NSP folder)')
@@ -1588,8 +1589,11 @@ def main(args=None):
     if prepare_xcode and not keep: raise BuildError('--prepare-xcode requires --keep-extracted: Xcode builds from the extracted files')
     if args.xcode_workspace and not prepare_xcode: raise BuildError('--xcode-workspace requires --prepare-xcode')
     extracted_mode = bool(args.extracted_dir)
+    prebuilt_shader_mode = bool(args.prebuilt_shader_dir)
+    if prebuilt_shader_mode and not extracted_mode: raise BuildError('--prebuilt-shader-dir requires --extracted-dir')
     nsp_dir = Path(os.path.expanduser(args.nsp_dir or NSP_DIR or ask('NSP folder: ', 'the NSP folder'))).resolve()
     extracted_dir = Path(os.path.expanduser(args.extracted_dir)).resolve() if extracted_mode else None
+    prebuilt_shader_dir = Path(os.path.expanduser(args.prebuilt_shader_dir)).resolve() if prebuilt_shader_mode else None
     keys = None if extracted_mode else Path(os.path.expanduser(args.keys or PROD_KEYS or ask('path of prod.keys: ', 'prod.keys (-k)'))).resolve()
     if not nsp_dir.is_dir(): raise BuildError(f'not a folder: {nsp_dir}')
     if extracted_mode:
@@ -1598,6 +1602,11 @@ def main(args=None):
             if not (extracted_dir / rel).is_file(): raise BuildError(f'--extracted-dir is missing required real game file: {extracted_dir / rel}')
         if (extracted_dir / 'RomFS/System/Version.txt').read_text(errors='replace').strip() != '1.9.0':
             raise BuildError('the supplied extracted RomFS is not BOTW 1.9.0 (System/Version.txt must contain 1.9.0)')
+        if prebuilt_shader_mode:
+            for rel in ('pkg', 'tables/shader_map.tsv', 'tables/shader_facts.tsv', 'tables/shader_pairs.tsv'):
+                p = prebuilt_shader_dir / rel
+                if not p.exists() or (p.is_dir() and not any(p.iterdir())): raise BuildError(f'prebuilt shader bundle is missing or empty: {p}')
+            if not any(prebuilt_shader_dir.joinpath('pkg').glob('*.bin')): raise BuildError(f'prebuilt shader package contains no .bin files: {prebuilt_shader_dir / "pkg"}')
     elif not keys.is_file(): raise BuildError(f'no such file: {keys}')
     sys.path.insert(0, str(repo / 'dm/games')); import game as gamemod   # game profiles
     global pg; import profile_guess as pg   # dm/games: a provisional profile's keys from the game files and from the heap check
@@ -1722,8 +1731,13 @@ def main(args=None):
     sv = versions if derived else need   # the versions whose files the shaders come from
     game = dirs[pkg_ver]
     # how the shaders are got follows from the packed version's files (profile_guess.py shader_sources): the graphics API, and the shaders made only at run time
-    src = pg.build_sources(game / 'ExeFS', game / 'RomFS', g.words('modules'))
-    gfx = src['graphics'][0]   # nvn, vulkan (Hades: the host's Vulkan layer, SPIR-V shaders) or gl (Digimon Story Cyber Sleuth: the host's GL layer, GLSL sources)
+    if prebuilt_shader_mode:
+        # BOTW-only fast path: Windows already scanned the full RomFS; the Mac runner receives only the small runtime marker files.
+        gfx = 'nvn'
+        src = {'graphics': ('nvn', 'BOTW prebuilt NVN shader package'), 'glslc_capture': (False, ''), 'vk_capture': (False, ''), 'gl_capture': (False, ''), 'ue_decode': (False, ''), 'oodle_packs': (False, ''), 'ue_legacy': (False, '')}
+    else:
+        src = pg.build_sources(game / 'ExeFS', game / 'RomFS', g.words('modules'))
+        gfx = src['graphics'][0]   # nvn, vulkan or gl
     glslc = gfx == 'nvn' and src['glslc_capture'][0]   # shaders the game compiles at run time, captured in the Mac host (capture_glslc)
     vkcap = gfx == 'vulkan' and src['vk_capture'][0]   # SPIR-V shaders the game generates at run time, captured in the Mac host (capture_shaders)
     glcap = gfx == 'gl' and src['gl_capture'][0]   # GLSL the game puts together at run time (LÖVE), captured in the Mac host (capture_shaders)
@@ -1774,7 +1788,17 @@ def main(args=None):
         # Trinity packs and legacy Unreal paks: the split decodes them with the packed version's own decoder (Oodle, LZ5), in the Mac host built for the profile
         oodle = (lambda: {'DM_OODLE_HOST': str(build_mac_host(repo, work / 'tools/dmhost', env, logs, g)), 'DM_OODLE_MODULES': str(patched)}) if src['oodle_packs'][0] or src['ue_legacy'][0] else None
         own = bool(provisional or derived)   # the shader tables come from this build's split (the profile's are checked otherwise)
-        pkey = split_shaders(py, repo, [dirs[v] / 'RomFS' for v in sv], [dirs[v] / 'ExeFS/main' for v in sv], sh / 'pkg', env, logs, g, own, oodle)
+        if prebuilt_shader_mode:
+            PROG.stage('install prebuilt shader inputs')
+            import shutil
+            for name in ('shader_map.tsv', 'shader_facts.tsv', 'shader_pairs.tsv'):
+                shutil.copy2(prebuilt_shader_dir / 'tables' / name, g.table(name))
+            shutil.copytree(prebuilt_shader_dir / 'pkg', sh / 'pkg', dirs_exist_ok=True)
+            if not any((sh / 'pkg').glob('*.bin')): raise BuildError(f'prebuilt shader package is empty: {sh / "pkg"}')
+            pkey = package_key(sh / 'pkg')
+            PROG.end(f'{sum(1 for _ in (sh / "pkg").glob("*.bin"))} shader package files from Windows')
+        else:
+            pkey = split_shaders(py, repo, [dirs[v] / 'RomFS' for v in sv], [dirs[v] / 'ExeFS/main' for v in sv], sh / 'pkg', env, logs, g, own, oodle)
         ios = build_shaders(py, repo, sh, xlate, env, logs, g, pkey, mac)
     if mac:   # a Mac-only build ends with the Mac host and the command that runs the game
         cmd = mac_run(py, repo, work, game, patched, ios, aoc, gfx, lang, env, logs, g, args.env_file or DM_ENV_FILE)
