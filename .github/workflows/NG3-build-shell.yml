@@ -34,14 +34,11 @@ jobs:
           if [ -f requirements.txt ]; then python3 -m pip install -r requirements.txt; fi
           if [ -f scripts/requirements.txt ]; then python3 -m pip install -r scripts/requirements.txt; fi
 
-      - name: Download and validate compact NG3 core
+      - name: Load and validate compact NG3 core from repository
         shell: bash
-        env:
-          NG3_CORE_ZIP_URL: ${{ secrets.NG3_CORE_ZIP_URL }}
         run: |
           set -euo pipefail
-          test -n "${NG3_CORE_ZIP_URL:-}" || { echo "[ERROR] Configure NG3_CORE_ZIP_URL."; exit 1; }
-          curl --fail --location --retry 3 --silent --show-error "$NG3_CORE_ZIP_URL" -o ng3_core.zip
+          cp "$GITHUB_WORKSPACE/NG3_CORE.zip" ng3_core.zip
           test -s ng3_core.zip
           python3 - <<'PY'
           import os, zipfile
@@ -78,14 +75,11 @@ jobs:
           test "$ROMFS_FILES" -le 10 || { echo "Core ZIP contains too much RomFS data ($ROMFS_FILES files)."; exit 1; }
           echo "[OK] Core files and compact marker validated."
 
-      - name: Download and validate Windows-preprocessed NG3 shaders
+      - name: Load and validate Windows-preprocessed NG3 shaders from repository
         shell: bash
-        env:
-          NG3_SHADER_ZIP_URL: ${{ secrets.NG3_SHADER_ZIP_URL }}
         run: |
           set -euo pipefail
-          test -n "${NG3_SHADER_ZIP_URL:-}" || { echo "[ERROR] Configure NG3_SHADER_ZIP_URL."; exit 1; }
-          curl --fail --location --retry 3 --silent --show-error "$NG3_SHADER_ZIP_URL" -o ng3_shader_prebuilt.zip
+          cp "$GITHUB_WORKSPACE/NG3_SHADERS.zip" ng3_shader_prebuilt.zip
           test -s ng3_shader_prebuilt.zip
           unzip -t ng3_shader_prebuilt.zip
           if unzip -Z1 ng3_shader_prebuilt.zip | grep -Eiq '(^|/)prod\.keys$'; then exit 1; fi
