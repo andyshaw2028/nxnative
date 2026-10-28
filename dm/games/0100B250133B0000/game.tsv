@@ -1,0 +1,22 @@
+# Provisional profile for NINJA GAIDEN 3: Razor's Edge (Switch 1.0.1). Memory and runtime settings remain provisional.
+# ---- Identity ----
+title_id	0100B250133B0000
+program_id	0100B250133B0000
+name	NINJA GAIDEN 3: Razor's Edge
+ipa	NinjaGaiden3RazorsEdge.ipa
+app_category	public.app-category.games
+pad_layout	full
+# ---- Versions ----
+build	v0	1.0.1	main=f20fdc280af01cbe4397ffec8c491bec	subsdk0=84e50460493a12f26100e5150fbff271	sdk=d9add76fc264863d85fbbd1d70076c76
+package	v0
+shader_versions	v0
+# ---- Files ----
+modules	main subsdk0 sdk
+romfs_marker	databin/databin
+zip_store	.mp4:.xws:.metallib
+mem_reserve	0x100000000
+mem_alias	0x10000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+shader_groups	/databin/=databin /patchbin/=patchbin
+shader_note	NINJA GAIDEN 3: Razor's Edge shaders (provisional profile)
