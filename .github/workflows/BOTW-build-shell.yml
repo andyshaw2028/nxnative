@@ -35,15 +35,14 @@ jobs:
           if [ -f requirements.txt ]; then python3 -m pip install -r requirements.txt; fi
           if [ -f scripts/requirements.txt ]; then python3 -m pip install -r scripts/requirements.txt; fi
 
-      - name: Download and validate full pre-extracted BOTW 1.9.0 assets
+      - name: Download and validate lightweight key-free BOTW core
         shell: bash
         env:
           BOTW_CORE_ZIP_URL: ${{ secrets.BOTW_CORE_ZIP_URL }}
         run: |
           set -euo pipefail
           if [ -z "${BOTW_CORE_ZIP_URL:-}" ]; then
-            echo "[ERROR] Configure BOTW_CORE_ZIP_URL to a private download URL for the full, key-free extracted BOTW 1.9.0 assets."
-            echo "Required ZIP layout: botw_core/ExeFS/* and botw_core/RomFS/**/* (complete RomFS, not only Bootup_Graphics.pack)."
+            echo "[ERROR] Configure BOTW_CORE_ZIP_URL to a private ZIP containing ExeFS and only the two RomFS marker files."
             exit 1
           fi
           curl --fail --location --retry 3 --silent --show-error "$BOTW_CORE_ZIP_URL" -o botw_core.zip
@@ -62,15 +61,46 @@ jobs:
           test -s "$CORE/RomFS/Pack/Bootup_Graphics.pack"
           test "$(cat "$CORE/RomFS/System/Version.txt")" = "1.9.0"
           PACK_SIZE=$(stat -f%z "$CORE/RomFS/Pack/Bootup_Graphics.pack")
-          ROMFS_FILES=$(find "$CORE/RomFS" -type f | wc -l | tr -d ' ')
-          ROMFS_KB=$(du -sk "$CORE/RomFS" | awk '{print $1}')
-          echo "Bootup_Graphics.pack: $PACK_SIZE bytes"
-          echo "RomFS files: $ROMFS_FILES; size: $ROMFS_KB KiB"
-          if [ "$PACK_SIZE" -lt 1048576 ] || [ "$ROMFS_FILES" -lt 40000 ] || [ "$ROMFS_KB" -lt 13000000 ]; then
-            echo "[ERROR] Input is not a complete BOTW RomFS; refusing a partial shell build."
+          if [ "$PACK_SIZE" -lt 1048576 ]; then
+            echo "[ERROR] Bootup_Graphics.pack is too small; refusing a placeholder."
             exit 1
           fi
-          echo "[OK] Real BOTW 1.9.0 ExeFS and full RomFS validated."
+          ROMFS_FILES=$(find "$CORE/RomFS" -type f | wc -l | tr -d ' ')
+          if [ "$ROMFS_FILES" -gt 10 ]; then
+            echo "[ERROR] The core ZIP should contain only the marker files, not the full RomFS."
+            exit 1
+          fi
+          echo "[OK] ExeFS and real BOTW 1.9.0 marker files validated."
+
+      - name: Download Windows-preprocessed shader package
+        shell: bash
+        env:
+          BOTW_SHADER_ZIP_URL: ${{ secrets.BOTW_SHADER_ZIP_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${BOTW_SHADER_ZIP_URL:-}" ]; then
+            echo "[ERROR] Configure BOTW_SHADER_ZIP_URL to the private ZIP produced by scripts/preprocess_botw_shaders.py."
+            exit 1
+          fi
+          curl --fail --location --retry 3 --silent --show-error "$BOTW_SHADER_ZIP_URL" -o botw_shader_prebuilt.zip
+          test -s botw_shader_prebuilt.zip
+          unzip -t botw_shader_prebuilt.zip
+          if unzip -Z1 botw_shader_prebuilt.zip | grep -Eiq '(^|/)prod\.keys$'; then
+            echo "[ERROR] Shader bundle unexpectedly contains prod.keys."
+            exit 1
+          fi
+          mkdir -p shader_prebuilt
+          unzip -q botw_shader_prebuilt.zip -d shader_prebuilt/
+          test -n "$(find shader_prebuilt/pkg -maxdepth 1 -type f -name '*.bin' -print -quit)"
+          for f in shader_map.tsv shader_facts.tsv shader_pairs.tsv; do
+            test -s "shader_prebuilt/tables/$f" || { echo "[ERROR] Missing shader table $f"; exit 1; }
+          done
+          SHADER_ROWS=$(grep -vcE '^(#|package[[:space:]])' shader_prebuilt/tables/shader_map.tsv || true)
+          if [ "$SHADER_ROWS" -lt 1000 ]; then
+            echo "[ERROR] Only $SHADER_ROWS shader-map rows found; refusing a partial shader bundle."
+            exit 1
+          fi
+          echo "[OK] Prebuilt shader package contains $SHADER_ROWS shader-map rows."
 
       - name: Build IPA from already extracted files (no keys, no NSP path)
         shell: bash
@@ -82,6 +112,7 @@ jobs:
           IPA="$GITHUB_WORKSPACE/workspace_core/ZeldaBreathOfTheWild.ipa"
           python3 scripts/build_ipa_from_nsp.py \
             --extracted-dir "$GITHUB_WORKSPACE/workspace_core/botw_core" \
+            --prebuilt-shader-dir "$GITHUB_WORKSPACE/shader_prebuilt" \
             --app-name "The Legend of Zelda: Breath of the Wild" \
             --package v1114112 \
             --language zh-Hans \
