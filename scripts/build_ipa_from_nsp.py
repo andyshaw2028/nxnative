@@ -1598,10 +1598,11 @@ def main(args=None):
     if not nsp_dir.is_dir(): raise BuildError(f'not a folder: {nsp_dir}')
     if extracted_mode:
         if not extracted_dir.is_dir(): raise BuildError(f'not an extracted game folder: {extracted_dir}')
-        for rel in ('ExeFS/main', 'ExeFS/sdk', 'ExeFS/subsdk0', 'RomFS/Pack/Bootup_Graphics.pack', 'RomFS/System/Version.txt'):
-            if not (extracted_dir / rel).is_file(): raise BuildError(f'--extracted-dir is missing required real game file: {extracted_dir / rel}')
-        if (extracted_dir / 'RomFS/System/Version.txt').read_text(errors='replace').strip() != '1.9.0':
-            raise BuildError('the supplied extracted RomFS is not BOTW 1.9.0 (System/Version.txt must contain 1.9.0)')
+        # Validate game-specific RomFS marker after resolving the registered profile.
+        for rel in ('ExeFS/main', 'ExeFS/rtld', 'ExeFS/sdk', 'ExeFS/subsdk0', 'control.nacp'):
+            if not (extracted_dir / rel).is_file(): raise BuildError(f'--extracted-dir is missing required game file: {extracted_dir / rel}')
+        if not (extracted_dir / 'RomFS').is_dir():
+            raise BuildError(f'--extracted-dir is missing RomFS directory: {extracted_dir / "RomFS"}')
         if prebuilt_shader_mode:
             for rel in ('pkg', 'tables/shader_map.tsv', 'tables/shader_facts.tsv', 'tables/shader_pairs.tsv'):
                 p = prebuilt_shader_dir / rel
@@ -1619,14 +1620,18 @@ def main(args=None):
     env.setdefault('J', str(os.cpu_count() or 8))   # shader_split.py's and dmsh_build.py's workers (their default is 8)
     py = sys.executable
     if extracted_mode:
-        app = 0x01007EF00011E000
+        # This workflow supplies a compact marker file for the registered NG3 profile.
+        app = 0x0100B250133B0000 if (extracted_dir / 'RomFS/databin/databin').exists() else 0
+        if not app: raise BuildError('cannot infer title ID from extracted files; expected RomFS/databin/databin for the NG3 profile')
         fam = {'base': None, 'updates': [], 'dlc': []}
-        say(f'using pre-extracted BOTW files: {extracted_dir}; no NSP decryption or prod.keys required')
+        say(f'using pre-extracted game files for {app:016X}: {extracted_dir}; no NSP decryption or prod.keys required')
     else:
         app, fam = scan_nsps(nsp_dir)
         fam = decompress_nsz(nsp_dir, app, fam, keys, env)
     force =args.provisional or PROVISIONAL   # a provisional profile even when dm/games has one (testing the guesses)
     g, provisional, shadowed = None if force else gamemod.by_title(app), False, False
+    if extracted_mode and not force and g is None:
+        raise BuildError(f'no registered profile for extracted title {app:016X}; add dm/games/{app:016X}/game.tsv before building')
     alias = None if extracted_mode or force or g else same_build(nsp_dir, app, fam, keys, repo, env)   # a known build under another title ID: packed from a profile derived from that build's
     if alias:
         g = alias[0]; say(f'no game profile for {app:016X}, but its main build {alias[2]} is game profile {g.id}\'s {alias[1]} ({g.get("name", "")}) under another title ID')
