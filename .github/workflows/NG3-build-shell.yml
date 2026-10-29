@@ -1,17 +1,66 @@
-      - name: Load and validate Windows-preprocessed NG3 shaders from repository
+name: "Build Ninja Gaiden 3 iOS Shell"
+
+"on":
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build NG3 IPA
+    runs-on: macos-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout NG3 shell branch
+        uses: actions/checkout@v4
+        with:
+          ref: feature/ng3-ios-shell
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install xcodegen zstd spirv-cross glslang
+          python3 -m pip install --upgrade pip
+          python3 -m pip install lz4 capstone fonttools backports.zstd
+
+          if [ -f requirements.txt ]; then
+            python3 -m pip install -r requirements.txt
+          fi
+
+          if [ -f scripts/requirements.txt ]; then
+            python3 -m pip install -r scripts/requirements.txt
+          fi
+
+      # --------------------------------------------------
+      # 1. Load the compact core archive
+      # --------------------------------------------------
+      - name: Load and validate compact NG3 core
         shell: bash
         run: |
           set -euo pipefail
 
-          SHADER_ZIP="$GITHUB_WORKSPACE/NG3_SHADERS.zip"
-          test -s "$SHADER_ZIP"
+          CORE_ZIP="$GITHUB_WORKSPACE/NG3_CORE.zip"
+          test -s "$CORE_ZIP"
 
-          # Normalize Windows ZIP paths for macOS/Linux.
+          export CORE_ZIP
           python3 - <<'PY'
           import os
           import zipfile
 
-          src = os.path.join(os.environ["GITHUB_WORKSPACE"], "NG3_SHADERS.zip")
+          src = os.environ["CORE_ZIP"]
           tmp = src + ".normalized.zip"
 
           with zipfile.ZipFile(src, "r") as zin:
@@ -31,45 +80,238 @@
 
                       seen.add(name)
 
-                      normalized = zipfile.ZipInfo(name, info.date_time)
-                      normalized.compress_type = info.compress_type
-                      normalized.external_attr = info.external_attr
-                      normalized.create_system = info.create_system
+                      new_info = zipfile.ZipInfo(name, info.date_time)
+                      new_info.compress_type = info.compress_type
+                      new_info.external_attr = info.external_attr
+                      new_info.create_system = info.create_system
 
                       data = b"" if name.endswith("/") else zin.read(info.filename)
-                      zout.writestr(normalized, data)
+                      zout.writestr(new_info, data)
+
+          os.replace(tmp, src)
+          print("[OK] Core ZIP paths normalized.")
+          PY
+
+          unzip -t "$CORE_ZIP"
+
+          if unzip -Z1 "$CORE_ZIP" | grep -Eiq '(^|/)prod\.keys$'; then
+            echo "::error::Unexpected prod.keys in core archive."
+            exit 1
+          fi
+
+          mkdir -p workspace_core
+          unzip -q "$CORE_ZIP" -d workspace_core
+
+          CORE="$GITHUB_WORKSPACE/workspace_core"
+
+          for f in main main.npdm rtld sdk subsdk0; do
+            test -s "$CORE/ExeFS/$f" || {
+              echo "::error::Missing ExeFS/$f"
+              exit 1
+            }
+          done
+
+          test -s "$CORE/control.nacp" || {
+            echo "::error::Missing control.nacp"
+            exit 1
+          }
+
+          test -s "$CORE/icon.jpg" || {
+            echo "::error::Missing icon.jpg"
+            exit 1
+          }
+
+          test -f "$CORE/RomFS/databin/databin" || {
+            echo "::error::Missing RomFS/databin/databin marker"
+            exit 1
+          }
+
+          MARKER_SIZE=$(stat -f%z "$CORE/RomFS/databin/databin")
+
+          if [ "$MARKER_SIZE" -gt 1048576 ]; then
+            echo "::error::RomFS marker is larger than 1 MiB: $MARKER_SIZE bytes"
+            exit 1
+          fi
+
+          ROMFS_FILES=$(find "$CORE/RomFS" -type f | wc -l | tr -d ' ')
+
+          if [ "$ROMFS_FILES" -gt 10 ]; then
+            echo "::error::Core archive contains too much RomFS data: $ROMFS_FILES files"
+            exit 1
+          fi
+
+          echo "[OK] NG3 core files validated."
+          echo "[INFO] Full ROMFS will not be bundled into the IPA."
+
+      # --------------------------------------------------
+      # 2. Load preprocessed shaders
+      # --------------------------------------------------
+      - name: Load and validate Windows-preprocessed NG3 shaders
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SHADER_ZIP="$GITHUB_WORKSPACE/NG3_SHADERS.zip"
+          test -s "$SHADER_ZIP"
+
+          # Rewrite Windows backslash paths as portable ZIP paths.
+          export SHADER_ZIP
+
+          python3 - <<'PY'
+          import os
+          import zipfile
+
+          src = os.environ["SHADER_ZIP"]
+          tmp = src + ".normalized.zip"
+
+          with zipfile.ZipFile(src, "r") as zin:
+              with zipfile.ZipFile(tmp, "w") as zout:
+                  seen = set()
+
+                  for info in zin.infolist():
+                      name = info.filename.replace("\\", "/")
+
+                      if name.startswith("/") or any(
+                          part == ".." for part in name.split("/")
+                      ):
+                          raise SystemExit(f"Unsafe ZIP path: {info.filename!r}")
+
+                      if name in seen:
+                          raise SystemExit(f"Duplicate ZIP path: {name}")
+
+                      seen.add(name)
+
+                      new_info = zipfile.ZipInfo(name, info.date_time)
+                      new_info.compress_type = info.compress_type
+                      new_info.external_attr = info.external_attr
+                      new_info.create_system = info.create_system
+
+                      data = b"" if name.endswith("/") else zin.read(info.filename)
+                      zout.writestr(new_info, data)
 
           os.replace(tmp, src)
           print("[OK] ZIP paths normalized.")
           PY
 
-          # Test only after normalizing the ZIP paths.
           unzip -t "$SHADER_ZIP"
 
           if unzip -Z1 "$SHADER_ZIP" | grep -Eiq '(^|/)prod\.keys$'; then
-            echo "Unexpected prod.keys in shader ZIP"
+            echo "::error::Unexpected prod.keys in shader archive."
             exit 1
           fi
 
           mkdir -p shader_prebuilt
           unzip -q "$SHADER_ZIP" -d shader_prebuilt
 
+          test -d shader_prebuilt/pkg || {
+            echo "::error::Missing shader_prebuilt/pkg directory."
+            exit 1
+          }
+
+          test -d shader_prebuilt/tables || {
+            echo "::error::Missing shader_prebuilt/tables directory."
+            exit 1
+          }
+
           test -n "$(find shader_prebuilt/pkg -maxdepth 1 -type f -name '*.bin' -print -quit)" || {
-            echo "No pkg/*.bin files"
+            echo "::error::No compiled shader .bin files found."
             exit 1
           }
 
           for f in shader_map.tsv shader_facts.tsv shader_pairs.tsv; do
             test -s "shader_prebuilt/tables/$f" || {
-              echo "Missing shader table $f"
+              echo "::error::Missing shader table $f"
               exit 1
             }
           done
 
           ROWS=$(grep -vcE '^(#|package[[:space:]])' shader_prebuilt/tables/shader_map.tsv || true)
-          test "$ROWS" -gt 0 || {
-            echo "shader_map.tsv has no records"
+
+          if [ "$ROWS" -le 0 ]; then
+            echo "::error::shader_map.tsv contains no records."
+            exit 1
+          fi
+
+          echo "[OK] NG3 shader bundle validated: $ROWS shader-map rows."
+          echo "[INFO] Using preprocessed shaders; shader translation is not rerun."
+
+      # --------------------------------------------------
+      # 3. Adapt project build checks
+      # --------------------------------------------------
+      - name: Adapt extracted-directory checks for NG3
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/prepare_ng3_build.py
+
+      # --------------------------------------------------
+      # 4. Build IPA without full ROMFS
+      # --------------------------------------------------
+      - name: Build unsigned NG3 IPA
+        shell: bash
+        env:
+          DM_OMIT_ROMFS: "1"
+          DM_APP_VERSION: "1.0.1"
+        run: |
+          set -euo pipefail
+
+          IPA="$GITHUB_WORKSPACE/workspace_core/NinjaGaiden3RazorsEdge.ipa"
+
+          python3 scripts/build_ipa_from_nsp.py \
+            "$GITHUB_WORKSPACE/workspace_core" \
+            --extracted-dir "$GITHUB_WORKSPACE/workspace_core" \
+            --prebuilt-shader-dir "$GITHUB_WORKSPACE/shader_prebuilt" \
+            --app-name "NINJA GAIDEN 3: Razor's Edge" \
+            --package v0 \
+            --out "$IPA"
+
+          test -s "$IPA" || {
+            echo "::error::IPA output was not created."
             exit 1
           }
 
-          echo "[OK] NG3 shader bundle contains $ROWS shader-map rows."
+          unzip -t "$IPA"
+
+          if unzip -Z1 "$IPA" | grep -Eiq '(^|/)prod\.keys$'; then
+            echo "::error::Unexpected prod.keys in IPA."
+            exit 1
+          fi
+
+          VERIFY="$GITHUB_WORKSPACE/ipa_verify"
+          mkdir -p "$VERIFY"
+          unzip -q "$IPA" -d "$VERIFY"
+
+          EXE=$(find "$VERIFY/Payload" -type f -name DmIOS -print -quit)
+
+          test -n "$EXE" || {
+            echo "::error::DmIOS executable not found in IPA."
+            exit 1
+          }
+
+          APP="${EXE%/DmIOS}"
+
+          test -f "$APP/Info.plist" || {
+            echo "::error::Info.plist missing."
+            exit 1
+          }
+
+          echo "[INFO] Bundle identifier:"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist"
+
+          echo "[INFO] Bundle executable:"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Info.plist"
+
+          echo "[OK] IPA structure validated."
+          echo "[NOTE] Successful compilation does not yet prove the game boots."
+          ls -lh "$IPA"
+
+      # --------------------------------------------------
+      # 5. Upload IPA artifact
+      # --------------------------------------------------
+      - name: Upload NG3 IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: NinjaGaiden3-iOS-IPA
+          path: workspace_core/NinjaGaiden3RazorsEdge.ipa
+          if-no-files-found: error
+          retention-days: 7
