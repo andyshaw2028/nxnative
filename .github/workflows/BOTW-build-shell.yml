@@ -1,4 +1,3 @@
-
 name: Build BotW iOS Native Shell
 
 on:
@@ -24,160 +23,150 @@ jobs:
       - name: Set up .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '8.0.x'
+          dotnet-version: '10.0.x'
 
       - name: Install macOS build and Python dependencies
         shell: bash
         run: |
           set -euo pipefail
-
           brew install xcodegen zstd spirv-cross glslang
-
           python3 -m pip install --upgrade pip
           python3 -m pip install lz4 capstone fonttools backports.zstd
+          if [ -f requirements.txt ]; then python3 -m pip install -r requirements.txt; fi
+          if [ -f scripts/requirements.txt ]; then python3 -m pip install -r scripts/requirements.txt; fi
 
-          if [ -f requirements.txt ]; then
-            python3 -m pip install -r requirements.txt
-          fi
-
-          if [ -f scripts/requirements.txt ]; then
-            python3 -m pip install -r scripts/requirements.txt
-          fi
-
-      - name: Download and prepare lightweight core
+      - name: Download and validate lightweight key-free BOTW core
         shell: bash
+        env:
+          BOTW_CORE_ZIP_URL: ${{ secrets.BOTW_CORE_ZIP_URL }}
         run: |
           set -euo pipefail
-
-          echo "Downloading lightweight core package..."
-
-          if ! curl -fL --retry 3 \
-            -o botw_core.zip \
-            "https://github.com/user-attachments/files/34022482/botw_core.zip"; then
-            curl -fL --retry 3 \
-              -o botw_core.zip \
-              "https://github.2aik.dev/https://github.com/user-attachments/files/34022482/botw_core.zip"
+          if [ -z "${BOTW_CORE_ZIP_URL:-}" ]; then
+            echo "[ERROR] Configure BOTW_CORE_ZIP_URL to a private ZIP containing ExeFS and only the two RomFS marker files."
+            exit 1
           fi
-
+          curl --fail --location --retry 3 --silent --show-error "$BOTW_CORE_ZIP_URL" -o botw_core.zip
           test -s botw_core.zip
+          # ZIPs created on Windows may store backslashes in entry names. Normalize
+          # them to POSIX separators before unzip -t/-Z1 and extraction on macOS.
+          python3 - <<'PY'
+          import os
+          import zipfile
+
+          src = "botw_core.zip"
+          tmp = "botw_core.normalized.zip"
+          with zipfile.ZipFile(src, "r") as zin, zipfile.ZipFile(tmp, "w") as zout:
+              seen = set()
+              for info in zin.infolist():
+                  name = info.filename.replace("\\", "/")
+                  parts = name.split("/")
+                  if name.startswith("/") or any(part == ".." for part in parts):
+                      raise SystemExit(f"[ERROR] Unsafe ZIP entry path: {info.filename!r}")
+                  if name in seen:
+                      raise SystemExit(f"[ERROR] Duplicate ZIP entry after path normalization: {name!r}")
+                  seen.add(name)
+                  new_info = zipfile.ZipInfo(name, date_time=info.date_time)
+                  new_info.compress_type = info.compress_type
+                  new_info.comment = info.comment
+                  new_info.extra = info.extra
+                  new_info.internal_attr = info.internal_attr
+                  new_info.external_attr = info.external_attr
+                  new_info.create_system = info.create_system
+                  if not name.endswith("/"):
+                      zout.writestr(new_info, zin.read(info.filename))
+                  else:
+                      zout.writestr(new_info, b"")
+          os.replace(tmp, src)
+          print(f"[OK] Normalized {len(seen)} ZIP paths to forward slashes.")
+          PY
           unzip -t botw_core.zip
+          if unzip -Z1 botw_core.zip | grep -Eiq '(^|/)prod\.keys$'; then
+            echo "[ERROR] Refusing an input archive containing prod.keys."
+            exit 1
+          fi
           mkdir -p workspace_core
           unzip -q botw_core.zip -d workspace_core/
-
-          test -f workspace_core/botw_core/prod.keys || {
-            echo "[ERROR] prod.keys missing from lightweight core package"
+          CORE="$GITHUB_WORKSPACE/workspace_core/botw_core"
+          for f in main main.npdm rtld sdk subsdk0; do
+            test -s "$CORE/ExeFS/$f" || { echo "[ERROR] Missing ExeFS/$f"; exit 1; }
+          done
+          test -s "$CORE/RomFS/Pack/Bootup_Graphics.pack"
+          test "$(cat "$CORE/RomFS/System/Version.txt")" = "1.9.0"
+          PACK_SIZE=$(stat -f%z "$CORE/RomFS/Pack/Bootup_Graphics.pack")
+          if [ "$PACK_SIZE" -lt 1048576 ]; then
+            echo "[ERROR] Bootup_Graphics.pack is too small; refusing a placeholder."
             exit 1
-          }
+          fi
+          ROMFS_FILES=$(find "$CORE/RomFS" -type f | wc -l | tr -d ' ')
+          if [ "$ROMFS_FILES" -gt 10 ]; then
+            echo "[ERROR] The core ZIP should contain only the marker files, not the full RomFS."
+            exit 1
+          fi
+          echo "[OK] ExeFS and real BOTW 1.9.0 marker files validated."
 
-          cp workspace_core/botw_core/prod.keys ./prod.keys
-
-          mkdir -p workspace_core/botw_core/extract/v0/RomFS/Pack
-          mkdir -p workspace_core/botw_core/RomFS/Pack
-          mkdir -p workspace_core/01007EF00011E000_build/ipa/data/v0
-
-          dd if=/dev/zero \
-            of=workspace_core/botw_core/extract/v0/RomFS/Pack/Bootup_Graphics.pack \
-            bs=1024 count=1
-
-          dd if=/dev/zero \
-            of=workspace_core/botw_core/RomFS/Pack/Bootup_Graphics.pack \
-            bs=1024 count=1
-
-          dd if=/dev/zero \
-            of=workspace_core/botw_core/extract/v0/control.nacp \
-            bs=1024 count=16
-
-          dd if=/dev/zero \
-            of=workspace_core/botw_core/control.nacp \
-            bs=1024 count=16
-
-          dd if=/dev/zero \
-            of=workspace_core/01007EF00011E000_build/ipa/data/v0/control.nacp \
-            bs=1024 count=16
-
-      - name: Run dedicated patch script
+      - name: Download Windows-preprocessed shader package
         shell: bash
+        env:
+          BOTW_SHADER_ZIP_URL: ${{ secrets.BOTW_SHADER_ZIP_URL }}
         run: |
           set -euo pipefail
-          python3 scripts/patch_build.py
+          if [ -z "${BOTW_SHADER_ZIP_URL:-}" ]; then
+            echo "[ERROR] Configure BOTW_SHADER_ZIP_URL to the private ZIP produced by scripts/preprocess_botw_shaders.py."
+            exit 1
+          fi
+          curl --fail --location --retry 3 --silent --show-error "$BOTW_SHADER_ZIP_URL" -o botw_shader_prebuilt.zip
+          test -s botw_shader_prebuilt.zip
+          unzip -t botw_shader_prebuilt.zip
+          if unzip -Z1 botw_shader_prebuilt.zip | grep -Eiq '(^|/)prod\.keys$'; then
+            echo "[ERROR] Shader bundle unexpectedly contains prod.keys."
+            exit 1
+          fi
+          mkdir -p shader_prebuilt
+          unzip -q botw_shader_prebuilt.zip -d shader_prebuilt/
+          test -n "$(find shader_prebuilt/pkg -maxdepth 1 -type f -name '*.bin' -print -quit)"
+          for f in shader_map.tsv shader_facts.tsv shader_pairs.tsv; do
+            test -s "shader_prebuilt/tables/$f" || { echo "[ERROR] Missing shader table $f"; exit 1; }
+          done
+          SHADER_ROWS=$(grep -vcE '^(#|package[[:space:]])' shader_prebuilt/tables/shader_map.tsv || true)
+          if [ "$SHADER_ROWS" -lt 1000 ]; then
+            echo "[ERROR] Only $SHADER_ROWS shader-map rows found; refusing a partial shader bundle."
+            exit 1
+          fi
+          echo "[OK] Prebuilt shader package contains $SHADER_ROWS shader-map rows."
 
-      - name: Build lightweight shell IPA
+      - name: Build IPA from already extracted files (no keys, no NSP path)
         shell: bash
+        env:
+          DM_OMIT_ROMFS: "1"
+          DM_APP_VERSION: "1.9.0"
         run: |
           set -euo pipefail
-
-          IPA="workspace_core/ZeldaBreathOfTheWild.ipa"
-
-          echo "=== Building IPA ==="
-
+          IPA="$GITHUB_WORKSPACE/workspace_core/ZeldaBreathOfTheWild.ipa"
           python3 scripts/build_ipa_from_nsp.py \
+            --extracted-dir "$GITHUB_WORKSPACE/workspace_core/botw_core" \
+            --prebuilt-shader-dir "$GITHUB_WORKSPACE/shader_prebuilt" \
             --app-name "The Legend of Zelda: Breath of the Wild" \
+            --package v1114112 \
+            --language zh-Hans \
             --out "$IPA" \
-            -k prod.keys \
-            workspace_core/
-
-          echo "=== Checking generated IPA ==="
-
-          test -s "$IPA" || {
-            echo "[ERROR] Build did not produce the expected IPA: $IPA"
-            find workspace_core -maxdepth 5 -type f \
-              \( -name '*.ipa' -o -name '*.log' \) -print
-            exit 1
-          }
-
+            "$GITHUB_WORKSPACE/workspace_core"
+          test -s "$IPA" || { echo "[ERROR] IPA was not created at $IPA"; exit 1; }
           unzip -t "$IPA"
-
-          echo "=== Checking app executable ==="
-
-          VERIFY_DIR="ipa_verify"
+          if unzip -Z1 "$IPA" | grep -Eiq '(^|/)prod\.keys$'; then
+            echo "[ERROR] Refusing an IPA containing prod.keys."
+            exit 1
+          fi
+          VERIFY_DIR="$GITHUB_WORKSPACE/ipa_verify"
           rm -rf "$VERIFY_DIR"
           mkdir -p "$VERIFY_DIR"
           unzip -q "$IPA" -d "$VERIFY_DIR"
-
-          APP_EXECUTABLE="$(find "$VERIFY_DIR/Payload" \
-            -type f -name 'DmIOS' -print -quit)"
-
-          test -n "$APP_EXECUTABLE" || {
-            echo "[ERROR] DmIOS executable not found inside IPA"
-            find "$VERIFY_DIR/Payload" -maxdepth 4 -print
-            exit 1
-          }
-
+          APP_EXECUTABLE="$(find "$VERIFY_DIR/Payload" -type f -name 'DmIOS' -print -quit)"
+          test -n "$APP_EXECUTABLE" || { echo "[ERROR] DmIOS executable missing from IPA"; exit 1; }
           APP_PATH="${APP_EXECUTABLE%/DmIOS}"
-
-          test -f "$APP_PATH/Info.plist" || {
-            echo "[ERROR] App Info.plist missing: $APP_PATH"
-            exit 1
-          }
-
-          echo "App path: $APP_PATH"
-
-          /usr/libexec/PlistBuddy \
-            -c 'Print :CFBundleIdentifier' \
-            "$APP_PATH/Info.plist"
-
-          /usr/libexec/PlistBuddy \
-            -c 'Print :CFBundleExecutable' \
-            "$APP_PATH/Info.plist"
-
-          echo "=== Inspecting memory entitlement ==="
-
-          if codesign -d --entitlements :- "$APP_EXECUTABLE" \
-            > entitlement-check.plist 2>&1; then
-            if grep -q \
-              'com.apple.developer.kernel.increased-memory-limit' \
-              entitlement-check.plist; then
-              echo "[OK] Increased Memory Limit entitlement found"
-            else
-              echo "[WARN] Entitlement was not confirmed"
-              cat entitlement-check.plist
-            fi
-          else
-            echo "[WARN] Could not inspect executable entitlements"
-            cat entitlement-check.plist
-          fi
-
-          echo "=== IPA validation complete ==="
+          test -f "$APP_PATH/Info.plist" || { echo "[ERROR] Info.plist missing"; exit 1; }
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_PATH/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP_PATH/Info.plist"
+          echo "[OK] IPA structure validated (this does not by itself prove the game boots)."
           ls -lh "$IPA"
 
       - name: Upload built IPA
