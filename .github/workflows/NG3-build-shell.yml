@@ -1,148 +1,75 @@
-name: Build Ninja Gaiden 3 iOS Shell
-
-on:
-  workflow_dispatch:
-
-permissions:
-  contents: read
-
-jobs:
-  build:
-    runs-on: macos-latest
-    timeout-minutes: 360
-    steps:
-      - name: Checkout NG3 shell branch
-        uses: actions/checkout@v4
-        with:
-          ref: feature/ng3-ios-shell
-
-      - name: Set up Python and .NET
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '10.0.x'
-
-      - name: Install build dependencies
-        shell: bash
-        run: |
-          set -euo pipefail
-          brew install xcodegen zstd spirv-cross glslang
-          python3 -m pip install --upgrade pip
-          python3 -m pip install lz4 capstone fonttools backports.zstd
-          if [ -f requirements.txt ]; then python3 -m pip install -r requirements.txt; fi
-          if [ -f scripts/requirements.txt ]; then python3 -m pip install -r scripts/requirements.txt; fi
-
-      - name: Load and validate compact NG3 core from repository
-        shell: bash
-        run: |
-          set -euo pipefail
-          CORE_ZIP="$GITHUB_WORKSPACE/NG3_CORE.zip"
-          test -s "$CORE_ZIP"
-          export CORE_ZIP
-          python3 - <<'PY'
-          import os, zipfile
-          src = os.environ["CORE_ZIP"]
-          tmp = src + ".normalized.zip"
-          with zipfile.ZipFile(src) as zin, zipfile.ZipFile(tmp, "w") as zout:
-              seen = set()
-              for info in zin.infolist():
-                  name = info.filename.replace("\\", "/")
-                  if name.startswith("/") or any(p == ".." for p in name.split("/")):
-                      raise SystemExit(f"Unsafe ZIP path: {info.filename!r}")
-                  if name in seen:
-                      raise SystemExit(f"Duplicate ZIP path: {name}")
-                  seen.add(name)
-                  ni = zipfile.ZipInfo(name, info.date_time)
-                  ni.compress_type = info.compress_type
-                  ni.external_attr = info.external_attr
-                  ni.create_system = info.create_system
-                  zout.writestr(ni, b"" if name.endswith("/") else zin.read(info.filename))
-          os.replace(tmp, src)
-          PY
-          unzip -t "$CORE_ZIP"
-          if unzip -Z1 "$CORE_ZIP" | grep -Eiq '(^|/)prod\.keys$'; then
-            echo "Unexpected prod.keys in core ZIP"
-            exit 1
-          fi
-          mkdir -p workspace_core
-          unzip -q "$CORE_ZIP" -d workspace_core
-          CORE="$GITHUB_WORKSPACE/workspace_core"
-          for f in main main.npdm rtld sdk subsdk0; do
-            test -s "$CORE/ExeFS/$f" || { echo "Missing ExeFS/$f"; exit 1; }
-          done
-          test -s "$CORE/control.nacp"
-          test -s "$CORE/icon.jpg"
-          test -f "$CORE/RomFS/databin/databin" || { echo "Missing RomFS marker path databin/databin"; exit 1; }
-          MARKER_SIZE=$(stat -f%z "$CORE/RomFS/databin/databin")
-          if [ "$MARKER_SIZE" -gt 1048576 ]; then
-            echo "[ERROR] Marker file is larger than 1 MiB ($MARKER_SIZE bytes). Do not upload the 2.9 GB game data file as a marker."
-            exit 1
-          fi
-          ROMFS_FILES=$(find "$CORE/RomFS" -type f | wc -l | tr -d ' ')
-          test "$ROMFS_FILES" -le 10 || { echo "Core ZIP contains too much RomFS data ($ROMFS_FILES files)."; exit 1; }
-          echo "[OK] Core files and compact marker validated."
-
       - name: Load and validate Windows-preprocessed NG3 shaders from repository
         shell: bash
         run: |
           set -euo pipefail
+
           SHADER_ZIP="$GITHUB_WORKSPACE/NG3_SHADERS.zip"
           test -s "$SHADER_ZIP"
+
+          # Normalize Windows ZIP paths for macOS/Linux.
+          python3 - <<'PY'
+          import os
+          import zipfile
+
+          src = os.path.join(os.environ["GITHUB_WORKSPACE"], "NG3_SHADERS.zip")
+          tmp = src + ".normalized.zip"
+
+          with zipfile.ZipFile(src, "r") as zin:
+              with zipfile.ZipFile(tmp, "w") as zout:
+                  seen = set()
+
+                  for info in zin.infolist():
+                      name = info.filename.replace("\\", "/")
+
+                      if name.startswith("/") or any(
+                          part == ".." for part in name.split("/")
+                      ):
+                          raise SystemExit(f"Unsafe ZIP path: {info.filename!r}")
+
+                      if name in seen:
+                          raise SystemExit(f"Duplicate ZIP path: {name}")
+
+                      seen.add(name)
+
+                      normalized = zipfile.ZipInfo(name, info.date_time)
+                      normalized.compress_type = info.compress_type
+                      normalized.external_attr = info.external_attr
+                      normalized.create_system = info.create_system
+
+                      data = b"" if name.endswith("/") else zin.read(info.filename)
+                      zout.writestr(normalized, data)
+
+          os.replace(tmp, src)
+          print("[OK] ZIP paths normalized.")
+          PY
+
+          # Test only after normalizing the ZIP paths.
           unzip -t "$SHADER_ZIP"
+
           if unzip -Z1 "$SHADER_ZIP" | grep -Eiq '(^|/)prod\.keys$'; then
             echo "Unexpected prod.keys in shader ZIP"
             exit 1
           fi
+
           mkdir -p shader_prebuilt
           unzip -q "$SHADER_ZIP" -d shader_prebuilt
-          test -n "$(find shader_prebuilt/pkg -maxdepth 1 -type f -name '*.bin' -print -quit)" || { echo "No pkg/*.bin files"; exit 1; }
-          for f in shader_map.tsv shader_facts.tsv shader_pairs.tsv; do
-            test -s "shader_prebuilt/tables/$f" || { echo "Missing shader table $f"; exit 1; }
-          done
-          ROWS=$(grep -vcE '^(#|package[[:space:]])' shader_prebuilt/tables/shader_map.tsv || true)
-          test "$ROWS" -gt 0 || { echo "shader_map.tsv has no records"; exit 1; }
-          echo "[OK] NG3 shader bundle contains $ROWS shader-map rows."
 
-      - name: Adapt extracted-dir checks for NG3
-        run: python3 scripts/prepare_ng3_build.py
-
-      - name: Build unsigned NG3 IPA
-        shell: bash
-        env:
-          DM_OMIT_ROMFS: "1"
-          DM_APP_VERSION: "1.0.1"
-        run: |
-          set -euo pipefail
-          IPA="$GITHUB_WORKSPACE/workspace_core/NinjaGaiden3RazorsEdge.ipa"
-          python3 scripts/build_ipa_from_nsp.py "$GITHUB_WORKSPACE/workspace_core" \
-            --extracted-dir "$GITHUB_WORKSPACE/workspace_core" \
-            --prebuilt-shader-dir "$GITHUB_WORKSPACE/shader_prebuilt" \
-            --app-name "NINJA GAIDEN 3: Razor's Edge" \
-            --package v0 \
-            --out "$IPA"
-          test -s "$IPA"
-          unzip -t "$IPA"
-          if unzip -Z1 "$IPA" | grep -Eiq '(^|/)prod\.keys$'; then
-            echo "Unexpected prod.keys in IPA"
+          test -n "$(find shader_prebuilt/pkg -maxdepth 1 -type f -name '*.bin' -print -quit)" || {
+            echo "No pkg/*.bin files"
             exit 1
-          fi
-          VERIFY="$GITHUB_WORKSPACE/ipa_verify"
-          mkdir -p "$VERIFY"
-          unzip -q "$IPA" -d "$VERIFY"
-          EXE="$(find "$VERIFY/Payload" -type f -name DmIOS -print -quit)"
-          test -n "$EXE" || { echo "DmIOS missing"; exit 1; }
-          APP="${EXE%/DmIOS}"
-          test -f "$APP/Info.plist"
-          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist"
-          /usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Info.plist"
-          echo "[OK] IPA structure validated; runtime boot is not yet proven."
-          ls -lh "$IPA"
+          }
 
-      - name: Upload NG3 IPA
-        uses: actions/upload-artifact@v4
-        with:
-          name: NinjaGaiden3-iOS-IPA
-          if-no-files-found: error
-          path: workspace_core/NinjaGaiden3RazorsEdge.ipa
+          for f in shader_map.tsv shader_facts.tsv shader_pairs.tsv; do
+            test -s "shader_prebuilt/tables/$f" || {
+              echo "Missing shader table $f"
+              exit 1
+            }
+          done
+
+          ROWS=$(grep -vcE '^(#|package[[:space:]])' shader_prebuilt/tables/shader_map.tsv || true)
+          test "$ROWS" -gt 0 || {
+            echo "shader_map.tsv has no records"
+            exit 1
+          }
+
+          echo "[OK] NG3 shader bundle contains $ROWS shader-map rows."
