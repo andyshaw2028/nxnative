@@ -1,4 +1,4 @@
-name: Build Ninja Gaiden 3 iOS Shell
+name: "Build Ninja Gaiden 3 iOS Shell"
 
 on:
   workflow_dispatch:
@@ -88,21 +88,68 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           SHADER_ZIP="$GITHUB_WORKSPACE/NG3_SHADERS.zip"
           test -s "$SHADER_ZIP"
+
+          # Normalize Windows ZIP paths for macOS/Linux.
+          export SHADER_ZIP
+          python3 - <<'PY'
+          import os
+          import zipfile
+
+          src = os.environ["SHADER_ZIP"]
+          tmp = src + ".normalized.zip"
+
+          with zipfile.ZipFile(src, "r") as zin:
+              with zipfile.ZipFile(tmp, "w") as zout:
+                  seen = set()
+                  for info in zin.infolist():
+                      name = info.filename.replace("\\", "/")
+                      if name.startswith("/") or any(part == ".." for part in name.split("/")):
+                          raise SystemExit(f"Unsafe ZIP path: {info.filename!r}")
+                      if name in seen:
+                          raise SystemExit(f"Duplicate ZIP path: {name}")
+                      seen.add(name)
+                      normalized = zipfile.ZipInfo(name, info.date_time)
+                      normalized.compress_type = info.compress_type
+                      normalized.external_attr = info.external_attr
+                      normalized.create_system = info.create_system
+                      data = b"" if name.endswith("/") else zin.read(info.filename)
+                      zout.writestr(normalized, data)
+
+          os.replace(tmp, src)
+          print("[OK] ZIP paths normalized.")
+          PY
+
           unzip -t "$SHADER_ZIP"
+
           if unzip -Z1 "$SHADER_ZIP" | grep -Eiq '(^|/)prod\.keys$'; then
             echo "Unexpected prod.keys in shader ZIP"
             exit 1
           fi
+
           mkdir -p shader_prebuilt
           unzip -q "$SHADER_ZIP" -d shader_prebuilt
-          test -n "$(find shader_prebuilt/pkg -maxdepth 1 -type f -name '*.bin' -print -quit)" || { echo "No pkg/*.bin files"; exit 1; }
+
+          test -n "$(find shader_prebuilt/pkg -maxdepth 1 -type f -name '*.bin' -print -quit)" || {
+            echo "No pkg/*.bin files"
+            exit 1
+          }
+
           for f in shader_map.tsv shader_facts.tsv shader_pairs.tsv; do
-            test -s "shader_prebuilt/tables/$f" || { echo "Missing shader table $f"; exit 1; }
+            test -s "shader_prebuilt/tables/$f" || {
+              echo "Missing shader table $f"
+              exit 1
+            }
           done
+
           ROWS=$(grep -vcE '^(#|package[[:space:]])' shader_prebuilt/tables/shader_map.tsv || true)
-          test "$ROWS" -gt 0 || { echo "shader_map.tsv has no records"; exit 1; }
+          test "$ROWS" -gt 0 || {
+            echo "shader_map.tsv has no records"
+            exit 1
+          }
+
           echo "[OK] NG3 shader bundle contains $ROWS shader-map rows."
 
       - name: Adapt extracted-dir checks for NG3
