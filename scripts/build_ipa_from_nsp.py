@@ -1598,11 +1598,14 @@ def main(args=None):
     if not nsp_dir.is_dir(): raise BuildError(f'not a folder: {nsp_dir}')
     if extracted_mode:
         if not extracted_dir.is_dir(): raise BuildError(f'not an extracted game folder: {extracted_dir}')
-        # Validate game-specific RomFS marker after resolving the registered profile.
-        for rel in ('ExeFS/main', 'ExeFS/rtld', 'ExeFS/sdk', 'ExeFS/subsdk0', 'control.nacp'):
-            if not (extracted_dir / rel).is_file(): raise BuildError(f'--extracted-dir is missing required game file: {extracted_dir / rel}')
+        # Validate only the common extracted layout here. Game-specific code
+        # modules are checked after the registered profile has been resolved.
+        if not (extracted_dir / 'ExeFS').is_dir():
+            raise BuildError(f'--extracted-dir is missing ExeFS directory: {extracted_dir / "ExeFS"}')
         if not (extracted_dir / 'RomFS').is_dir():
             raise BuildError(f'--extracted-dir is missing RomFS directory: {extracted_dir / "RomFS"}')
+        if not (extracted_dir / 'control.nacp').is_file():
+            raise BuildError(f'--extracted-dir is missing required game file: {extracted_dir / "control.nacp"}')
         if prebuilt_shader_mode:
             for rel in ('pkg', 'tables/shader_map.tsv', 'tables/shader_facts.tsv', 'tables/shader_pairs.tsv'):
                 p = prebuilt_shader_dir / rel
@@ -1620,9 +1623,29 @@ def main(args=None):
     env.setdefault('J', str(os.cpu_count() or 8))   # shader_split.py's and dmsh_build.py's workers (their default is 8)
     py = sys.executable
     if extracted_mode:
-        # This workflow supplies a compact marker file for the registered NG3 profile.
-        app = 0x0100B250133B0000 if (extracted_dir / 'RomFS/databin/databin').exists() else 0
-        if not app: raise BuildError('cannot infer title ID from extracted files; expected RomFS/databin/databin for the NG3 profile')
+        # A compact extracted workspace may identify its registered game with
+        # .nxnative-title.  Keep the legacy NG3 marker as a compatibility fallback.
+        title_file = extracted_dir / '.nxnative-title'
+        if title_file.is_file():
+            title_text = title_file.read_text(encoding='ascii').strip()
+            try:
+                app = int(title_text, 16)
+            except ValueError:
+                raise BuildError(
+                    f'invalid title ID in {title_file}: {title_text!r}'
+                )
+            if not (0 < app <= 0xffffffffffffffff):
+                raise BuildError(
+                    f'invalid title ID in {title_file}: {title_text!r}'
+                )
+        elif (extracted_dir / 'RomFS/databin/databin').exists():
+            # Compatibility with the existing Ninja Gaiden 3 compact workflow.
+            app = 0x0100B250133B0000
+        else:
+            raise BuildError(
+                f'cannot infer title ID from extracted files: '
+                f'expected {title_file} (16 hexadecimal digits)'
+            )
         fam = {'base': None, 'updates': [], 'dlc': []}
         say(f'using pre-extracted game files for {app:016X}: {extracted_dir}; no NSP decryption or prod.keys required')
     else:
@@ -1632,6 +1655,20 @@ def main(args=None):
     g, provisional, shadowed = None if force else gamemod.by_title(app), False, False
     if extracted_mode and not force and g is None:
         raise BuildError(f'no registered profile for extracted title {app:016X}; add dm/games/{app:016X}/game.tsv before building')
+    if extracted_mode and g is not None:
+        required_modules = list(dict.fromkeys(['rtld'] + g.words('modules')))
+        for module in required_modules:
+            p = extracted_dir / 'ExeFS' / module
+            if not p.is_file():
+                raise BuildError(f'--extracted-dir is missing profile-required code module: {p}')
+
+        romfs_marker = g.get('romfs_marker')
+        if romfs_marker:
+            marker = extracted_dir / 'RomFS' / romfs_marker
+            if not marker.is_file():
+                raise BuildError(
+                    f'--extracted-dir is missing profile RomFS marker: {marker}'
+                )
     alias = None if extracted_mode or force or g else same_build(nsp_dir, app, fam, keys, repo, env)   # a known build under another title ID: packed from a profile derived from that build's
     if alias:
         g = alias[0]; say(f'no game profile for {app:016X}, but its main build {alias[2]} is game profile {g.id}\'s {alias[1]} ({g.get("name", "")}) under another title ID')

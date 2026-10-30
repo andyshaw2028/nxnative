@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # Compiled-shader cache keyed by the Metal source (dmsh_build.py): a library is compiled once per (MSL text, compile convention, compiler), so a chain change
 # that leaves a shader's MSL as it was (a translator fix, a new rule for other shaders) costs that shader no Metal compile. The Metal compiler is deterministic:
 # the same MSL with the same flags gives a byte-identical metallib (checked for macOS and iOS), which is what makes reuse safe.
@@ -11,7 +11,11 @@
 import os, re, json, shutil, ctypes, hashlib, threading, subprocess, collections
 
 FORMAT = b'dmsh_mtlcache 1'
-_clonefile = getattr(ctypes.CDLL(None, use_errno=True), 'clonefile', None)   # APFS copy-on-write copy (no data written); elsewhere a plain copy
+_clonefile = (
+    None
+    if os.name == 'nt'
+    else getattr(ctypes.CDLL(None, use_errno=True), 'clonefile', None)
+)   # APFS copy-on-write copy (no data written); elsewhere a plain copy
 
 
 def clone(src, dst):
@@ -47,7 +51,7 @@ class Cache:
             if os.path.exists(air): os.unlink(air)
 
     def compile(self, target, msl, lib):
-        """msl → lib for target: a clone of the library that the same source compiled to before, or a compile (then kept). Raises CalledProcessError as the compile does"""
+        """msl 鈫?lib for target: a clone of the library that the same source compiled to before, or a compile (then kept). Raises CalledProcessError as the compile does"""
         p = self.path(target, open(msl, 'rb').read())
         if os.path.exists(p):
             clone(p, lib); self.count((target, 'reused')); return
@@ -107,3 +111,5 @@ class Cache:
         s = self.stats
         return 'Metal cache: ' + '; '.join(f'{t} {s[t, "reused"]} reused, {s[t, "compiled"]} compiled' + (f', {s[t, "filled"]} filled from earlier builds' if s[t, 'filled'] else '')
                                           for t in self.targets)
+
+

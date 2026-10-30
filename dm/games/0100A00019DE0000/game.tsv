@@ -17,12 +17,13 @@ pad_layout	full
 
 # ---- Versions ----
 build	v0	0.0.126424	main=5219053e5eb156be80fbb2f303779531	sdk=d83a56a5558798414c78ec722867a7da
-package	v0
-shader_versions	v0
+build	v589824	1.0.137848	main=8ce1ac48e9fa74479051f3520e632df4	sdk=190030518b5d64e5d87b84bc54661af9
+package	v589824
+shader_versions	v589824
 
 # ---- Files ----
 modules	main sdk
-romfs_marker	Audio/Switch/Music.bank
+romfs_marker	Game/GUI/Platform/NX/MainMenuScreen.sjson
 zip_store	.bank:.bik:.fsb:.gpk:.nro:.pkg:.xnb:.metallib
 
 # ---- Graphics ----
