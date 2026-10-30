@@ -1,0 +1,477 @@
+name: "Build Hades II iOS Shell"
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout Hades II shell branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python and .NET
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          brew install xcodegen zstd spirv-cross glslang
+
+          python3 -m pip install --upgrade pip
+          python3 -m pip install \
+            lz4 \
+            capstone \
+            fonttools \
+            backports.zstd
+
+          if [ -f requirements.txt ]; then
+            python3 -m pip install -r requirements.txt
+          fi
+
+          if [ -f scripts/requirements.txt ]; then
+            python3 -m pip install -r scripts/requirements.txt
+          fi
+
+      - name: Load and validate compact Hades II core
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CORE_ZIP="$GITHUB_WORKSPACE/HADES2_CORE_137848.zip"
+
+          test -s "$CORE_ZIP" || {
+            echo "[ERROR] Missing HADES2_CORE_137848.zip"
+            exit 1
+          }
+
+          export CORE_ZIP
+
+          python3 - <<'PY'
+          import os
+          import zipfile
+
+          src = os.environ["CORE_ZIP"]
+          tmp = src + ".normalized.zip"
+
+          with zipfile.ZipFile(src, "r") as zin:
+              with zipfile.ZipFile(tmp, "w") as zout:
+                  seen = set()
+
+                  for info in zin.infolist():
+                      name = info.filename.replace("\\", "/")
+
+                      if (
+                          name.startswith("/")
+                          or any(part == ".." for part in name.split("/"))
+                      ):
+                          raise SystemExit(
+                              f"Unsafe ZIP path: {info.filename!r}"
+                          )
+
+                      if name in seen:
+                          raise SystemExit(
+                              f"Duplicate ZIP path: {name}"
+                          )
+
+                      seen.add(name)
+
+                      normalized = zipfile.ZipInfo(
+                          name,
+                          info.date_time,
+                      )
+                      normalized.compress_type = info.compress_type
+                      normalized.external_attr = info.external_attr
+                      normalized.create_system = info.create_system
+
+                      data = (
+                          b""
+                          if name.endswith("/")
+                          else zin.read(info.filename)
+                      )
+
+                      zout.writestr(normalized, data)
+
+          os.replace(tmp, src)
+
+          print("[OK] Core ZIP paths normalized.")
+          PY
+
+          unzip -t "$CORE_ZIP"
+
+          if unzip -Z1 "$CORE_ZIP" |
+             grep -Eiq '(^|/)prod\.keys$'; then
+            echo "[ERROR] Unexpected prod.keys in core ZIP"
+            exit 1
+          fi
+
+          rm -rf workspace_core
+          mkdir -p workspace_core
+
+          unzip -q "$CORE_ZIP" -d workspace_core
+
+          CORE="$GITHUB_WORKSPACE/workspace_core"
+
+          # New generic extracted-mode identity.
+          test -s "$CORE/.nxnative-title" || {
+            echo "[ERROR] Missing .nxnative-title"
+            exit 1
+          }
+
+          TITLE="$(tr -d '\r\n[:space:]' < "$CORE/.nxnative-title")"
+
+          if [ "$TITLE" != "0100A00019DE0000" ]; then
+            echo "[ERROR] Unexpected title ID: $TITLE"
+            exit 1
+          fi
+
+          # Hades II v589824 profile modules + rtld.
+          for f in main main.npdm rtld sdk; do
+            test -s "$CORE/ExeFS/$f" || {
+              echo "[ERROR] Missing ExeFS/$f"
+              exit 1
+            }
+          done
+
+          test -s "$CORE/control.nacp" || {
+            echo "[ERROR] Missing control.nacp"
+            exit 1
+          }
+
+          test -s "$CORE/icon.jpg" || {
+            echo "[ERROR] Missing icon.jpg"
+            exit 1
+          }
+
+          MARKER="$CORE/RomFS/Game/GUI/Platform/NX/MainMenuScreen.sjson"
+
+          test -f "$MARKER" || {
+            echo "[ERROR] Missing Hades II RomFS marker"
+            exit 1
+          }
+
+          MARKER_SIZE="$(stat -f%z "$MARKER")"
+
+          if [ "$MARKER_SIZE" -gt 1048576 ]; then
+            echo "[ERROR] Marker is unexpectedly large: $MARKER_SIZE bytes"
+            exit 1
+          fi
+
+          ROMFS_FILES="$(
+            find "$CORE/RomFS" -type f |
+            wc -l |
+            tr -d ' '
+          )"
+
+          test "$ROMFS_FILES" -le 10 || {
+            echo "[ERROR] Core contains too much RomFS data: $ROMFS_FILES files"
+            exit 1
+          }
+
+          echo "[OK] Hades II compact core validated."
+          echo "[OK] title=$TITLE marker=$MARKER_SIZE bytes"
+
+      - name: Load and validate Windows-preprocessed Hades II shaders
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SHADER_ZIP="$GITHUB_WORKSPACE/HADES2_SHADERS_137848.zip"
+
+          test -s "$SHADER_ZIP" || {
+            echo "[ERROR] Missing HADES2_SHADERS_137848.zip"
+            exit 1
+          }
+
+          export SHADER_ZIP
+
+          python3 - <<'PY'
+          import os
+          import zipfile
+
+          src = os.environ["SHADER_ZIP"]
+          tmp = src + ".normalized.zip"
+
+          with zipfile.ZipFile(src, "r") as zin:
+              with zipfile.ZipFile(tmp, "w") as zout:
+                  seen = set()
+
+                  for info in zin.infolist():
+                      name = info.filename.replace("\\", "/")
+
+                      if (
+                          name.startswith("/")
+                          or any(part == ".." for part in name.split("/"))
+                      ):
+                          raise SystemExit(
+                              f"Unsafe ZIP path: {info.filename!r}"
+                          )
+
+                      if name in seen:
+                          raise SystemExit(
+                              f"Duplicate ZIP path: {name}"
+                          )
+
+                      seen.add(name)
+
+                      normalized = zipfile.ZipInfo(
+                          name,
+                          info.date_time,
+                      )
+                      normalized.compress_type = info.compress_type
+                      normalized.external_attr = info.external_attr
+                      normalized.create_system = info.create_system
+
+                      data = (
+                          b""
+                          if name.endswith("/")
+                          else zin.read(info.filename)
+                      )
+
+                      zout.writestr(normalized, data)
+
+          os.replace(tmp, src)
+
+          print("[OK] Shader ZIP paths normalized.")
+          PY
+
+          unzip -t "$SHADER_ZIP"
+
+          if unzip -Z1 "$SHADER_ZIP" |
+             grep -Eiq '(^|/)prod\.keys$'; then
+            echo "[ERROR] Unexpected prod.keys in shader ZIP"
+            exit 1
+          fi
+
+          rm -rf shader_prebuilt
+          mkdir -p shader_prebuilt
+
+          unzip -q "$SHADER_ZIP" -d shader_prebuilt
+
+          test -s shader_prebuilt/pkg/ps_other.bin || {
+            echo "[ERROR] Missing pkg/ps_other.bin"
+            exit 1
+          }
+
+          test -s shader_prebuilt/pkg/vs_other.bin || {
+            echo "[ERROR] Missing pkg/vs_other.bin"
+            exit 1
+          }
+
+          for f in \
+            shader_map.tsv \
+            shader_facts.tsv \
+            shader_pairs.tsv
+          do
+            test -s "shader_prebuilt/tables/$f" || {
+              echo "[ERROR] Missing shader table $f"
+              exit 1
+            }
+          done
+
+          ROWS="$(
+            grep -vcE \
+              '^(#|package[[:space:]])' \
+              shader_prebuilt/tables/shader_map.tsv ||
+            true
+          )"
+
+          if [ "$ROWS" -ne 55 ]; then
+            echo "[ERROR] Expected 55 shader-map rows, got $ROWS"
+            exit 1
+          fi
+
+          # Stage-1 SPIR-V archive is retained for validation/debugging.
+          SPV_COUNT="$(
+            find shader_prebuilt/spv \
+              -maxdepth 1 \
+              -type f \
+              -name '*.spv' |
+            wc -l |
+            tr -d ' '
+          )"
+
+          RES_COUNT="$(
+            find shader_prebuilt/spv \
+              -maxdepth 1 \
+              -type f \
+              -name '*.res.json' |
+            wc -l |
+            tr -d ' '
+          )"
+
+          test "$SPV_COUNT" -eq 55 || {
+            echo "[ERROR] Expected 55 SPV files, got $SPV_COUNT"
+            exit 1
+          }
+
+          test "$RES_COUNT" -eq 55 || {
+            echo "[ERROR] Expected 55 res.json files, got $RES_COUNT"
+            exit 1
+          }
+
+          echo "[OK] Hades II shader bundle validated."
+          echo "[OK] shader-map=$ROWS spv=$SPV_COUNT res=$RES_COUNT"
+
+      - name: Validate Hades II registered profile
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import sys
+          from pathlib import Path
+
+          repo = Path.cwd()
+
+          sys.path.insert(
+              0,
+              str(repo / "dm" / "games"),
+          )
+
+          import game
+
+          g = game.by_title(0x0100A00019DE0000)
+
+          if g is None:
+              raise SystemExit(
+                  "Hades II profile is not registered"
+              )
+
+          if g.get("package") != "v589824":
+              raise SystemExit(
+                  f"Unexpected package: {g.get('package')!r}"
+              )
+
+          if g.words("modules") != ["main", "sdk"]:
+              raise SystemExit(
+                  f"Unexpected modules: {g.words('modules')!r}"
+              )
+
+          if (
+              g.get("romfs_marker")
+              != "Game/GUI/Platform/NX/MainMenuScreen.sjson"
+          ):
+              raise SystemExit(
+                  "Unexpected Hades II romfs_marker"
+              )
+
+          builds = g.builds()
+
+          if "v589824" not in builds:
+              raise SystemExit(
+                  "Missing v589824 build registration"
+              )
+
+          b = builds["v589824"]
+
+          if (
+              b.get("main")
+              != "8ce1ac48e9fa74479051f3520e632df4"
+          ):
+              raise SystemExit(
+                  f"Unexpected main build ID: {b.get('main')}"
+              )
+
+          if (
+              b.get("sdk")
+              != "190030518b5d64e5d87b84bc54661af9"
+          ):
+              raise SystemExit(
+                  f"Unexpected sdk build ID: {b.get('sdk')}"
+              )
+
+          print("[OK] Hades II v589824 profile validated.")
+          PY
+
+      - name: Build unsigned Hades II IPA
+        shell: bash
+        env:
+          DM_OMIT_ROMFS: "1"
+          DM_APP_VERSION: "1.0.137848"
+        run: |
+          set -euo pipefail
+
+          IPA="$GITHUB_WORKSPACE/workspace_core/HadesII.ipa"
+
+          python3 scripts/build_ipa_from_nsp.py \
+            "$GITHUB_WORKSPACE/workspace_core" \
+            --extracted-dir "$GITHUB_WORKSPACE/workspace_core" \
+            --prebuilt-shader-dir "$GITHUB_WORKSPACE/shader_prebuilt" \
+            --app-name "Hades II" \
+            --package v589824 \
+            --out "$IPA"
+
+          test -s "$IPA"
+
+          unzip -t "$IPA"
+
+          if unzip -Z1 "$IPA" |
+             grep -Eiq '(^|/)prod\.keys$'; then
+            echo "[ERROR] Unexpected prod.keys in IPA"
+            exit 1
+          fi
+
+          VERIFY="$GITHUB_WORKSPACE/ipa_verify"
+
+          rm -rf "$VERIFY"
+          mkdir -p "$VERIFY"
+
+          unzip -q "$IPA" -d "$VERIFY"
+
+          EXE="$(
+            find "$VERIFY/Payload" \
+              -type f \
+              -name DmIOS \
+              -print \
+              -quit
+          )"
+
+          test -n "$EXE" || {
+            echo "[ERROR] DmIOS missing"
+            exit 1
+          }
+
+          APP="${EXE%/DmIOS}"
+
+          test -f "$APP/Info.plist"
+
+          echo "CFBundleIdentifier:"
+          /usr/libexec/PlistBuddy \
+            -c 'Print :CFBundleIdentifier' \
+            "$APP/Info.plist"
+
+          echo "CFBundleExecutable:"
+          /usr/libexec/PlistBuddy \
+            -c 'Print :CFBundleExecutable' \
+            "$APP/Info.plist"
+
+          echo "CFBundleShortVersionString:"
+          /usr/libexec/PlistBuddy \
+            -c 'Print :CFBundleShortVersionString' \
+            "$APP/Info.plist"
+
+          echo "[OK] Hades II IPA structure validated."
+          echo "[NOTE] Runtime boot/gameplay is not yet proven."
+
+          ls -lh "$IPA"
+
+      - name: Upload Hades II IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: HadesII-1.0.137848-iOS-IPA
+          if-no-files-found: error
+          path: workspace_core/HadesII.ipa
